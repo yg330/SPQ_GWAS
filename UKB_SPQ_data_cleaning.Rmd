@@ -1,0 +1,352 @@
+---
+title: "UKB_SPQ"
+author: "Yuanjun Gu"
+date: "2026-01-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Check path variables auto load in .Rprofile
+library(here) # for relative path finding
+library(tidyverse)
+library(data.table)
+library(glue)
+
+# for general visualisation
+library(patchwork)
+
+# for phenotype correlation
+library(Hmisc)
+library(corrplot)
+
+# for GWAS visualisation
+library(topr)
+```
+# Generate Master Pheno/Covar Table for SPQ and calculate SPQ_total
+
+Sensory Perception Quotient-10 (SPQ-10)
+For further description please go to: https://biobank.ndph.ox.ac.uk/showcase/label.cgi?id=520
+
+For all other traits/phenotypes/etc, check respective entry through these files:
+~/rds/rds-rb643-ukbiobank2/Data_Phenotype/DataFetch_09052025/ukb679961.html - All fields
+~/rds/rds-rb643-ukbiobank2/Data_Phenotype/DataFetch_22122025/ukb704872.html - Online follow-up Questionnaires
+
+If you still didn't find it, then you should be able to find them all at here: https://biobank.ndph.ox.ac.uk/showcase/search.cgi
+
+```{r Dataframe formatting and Cleaning: Initial Listed Columns of Interests}
+# Grabbing potentially related items of interests
+# eid - UKB annonymised id
+
+# age-related items:
+#   Data-Field 52: Month of birth
+#   Data-Field 34: Year of birth
+#   32362	When online Sensory Perception Quotient-10 (SPQ-10) module completed
+
+# sex/gender-related items:
+#   31-0.0 Reported Sex
+#   22001-0.0 Genetic Sex
+
+# SPQ10 items:
+#   32353	Ability to distinguish between apparently identical items of clothing
+#   32345	Ability to distinguish different people by their smell
+#   32348	Ability to notice a tiny change in the temperature
+#   32354	Ability to see dust particles in the air
+#   32351	Ability to smell a small gas leak within the house
+#   32349	Ability to taste the difference between apparently identical sweets
+#   32346	Ability to taste the difference between two brands of salty potato crisps
+#   32350	Ability to tell the weight difference between two coins with eyes closed
+#   32347	Can hear electricity humming in the walls
+#   32352	Would be the first to hear a fly in the room
+
+# Physical Health related items: [!!! May have more appropriate item list, do double check !!!]
+# Data-Field 29087: Experienced a life-threatening injury or illness
+# Data-Field 29201	When online Adverse life events questionnaire completed
+# https://biobank.ndph.ox.ac.uk/showcase/search.cgi?wot=0&srch=diagnos&sim=on&yfirst=2000&ylast=2026 = This probably covers everything you ever need about this.
+
+# Mental Health related items:
+# Data-Field 29000: Using this in particular as it is newer, includes more people, more conditions and allow multiple selections
+# Alternatively you can use: Data-Field 20544, but this was done in 2016
+
+# ADHD specific:
+# Data-Field 32262 Diagnosis of ADHD by a medical professional = Data-Field 32262(N=209) vs Data-Field 29000 (N=241), maybe think about what to chose.
+# Data-Field 32263 Age of ADHD diagnosis
+
+# ASD specific:
+# Data-Field 32324 Diagnosis of autism by a medical professional = Data-Field 32324(N=313) vs Data-Field 29000 (N=408), maybe think about what to chose.
+# Data-Field 32325 Age of autism diagnosis 
+
+# GWAS QC-related items:
+# 21000-0.0 Self-identified white Europeans
+# 22027-0.0 Outliers for heterozygosity or missing rate
+# 22000-0.0 genotype batch
+# genetic PCA": "22009-0.1","22009-0.2","22009-0.3","22009-0.4","22009-0.5","22009-0.6","22009-0.7","22009-0.8","22009-0.9","22009-0.10",
+#                "22009-0.11","22009-0.12","22009-0.13","22009-0.14","22009-0.15","22009-0.16","22009-0.17","22009-0.18","22009-0.19","22009-0.20"
+#                "22009-0.21", "22009-0.22", "22009-0.23","22009-0.24", "22009-0.25", "22009-0.26", "22009-0.27", "22009-0.28", "22009-0.29","22009-0.30",
+#                "22009-0.31", "22009-0.32", "22009-0.33", "22009-0.34", "22009-0.35","22009-0.36", "22009-0.37", "22009-0.38", "22009-0.39", "22009-0.40"
+```
+
+```{r Dataframe formatting and Cleaning: Format Columns of Interests List to use for search}
+# Participant ID
+eid_vars = "eid"
+
+# Age-related variables
+age_vars = c(
+  "52-0.0",      # Month of birth
+  "34-0.0",      # Year of birth
+  "32362-0.0"    # When online SPQ-10 module completed
+)
+
+# Sex/gender-related variables
+sex_vars = c(
+  "31-0.0",    # Reported Sex
+  "22001-0.0"  # Genetic Sex
+)
+
+# SPQ-10 (Sensory Perception Quotient) items
+spq10_vars = c(
+  "32353-0.0",  # Ability to distinguish between apparently identical items of clothing
+  "32345-0.0",  # Ability to distinguish different people by their smell
+  "32348-0.0",  # Ability to notice a tiny change in the temperature
+  "32354-0.0",  # Ability to see dust particles in the air
+  "32351-0.0",  # Ability to smell a small gas leak within the house
+  "32349-0.0",  # Ability to taste the difference between apparently identical sweets
+  "32346-0.0",  # Ability to taste the difference between two brands of salty potato crisps
+  "32350-0.0",  # Ability to tell the weight difference between two coins with eyes closed
+  "32347-0.0",  # Can hear electricity humming in the walls
+  "32352-0.0"   # Would be the first to hear a fly in the room
+)
+
+# # !! TODO: DECIDE WHAT TO DO FOR IF NEEDED !! Physical health variables
+# physical_health_vars = c(
+#   "29087",  # Experienced a life-threatening injury or illness
+#   "29201"   # When online Adverse life events questionnaire completed
+# )
+# # Note: For diagnoses, see: https://biobank.ndph.ox.ac.uk/showcase/search.cgi?wot=0&srch=diagnos&sim=on&yfirst=2000&ylast=2026
+
+# Mental health variables
+mental_health_vars = paste0("29000-0.", 0:19) # Multiple choice mental health diagnoses (newer, more comprehensive)
+# Alternative: "20544" (older, from 2016)
+
+# ADHD-specific variables
+adhd_vars = c(
+  "32262-0.0",  # Diagnosis of ADHD by a medical professional (N=209 vs 29000 N=241)
+  "32263-0.0"   # Age of ADHD diagnosis
+)
+
+# ASD-specific variables
+asd_vars = c(
+  "32324-0.0",  # Diagnosis of autism by a medical professional (N=313 vs 29000 N=408)
+  "32325-0.0"   # Age of autism diagnosis
+)
+
+# GWAS QC variables
+gwas_qc_vars = c(
+  "22027-0.0",  # Outliers for heterozygosity or missing rate
+  "22000-0.0"   # Genotype batch
+)
+
+# Genetic PCs (first 40 principal components)
+genetic_pca_vars = paste0("22009-0.", 1:40)
+
+# Combine all variables
+all_vars = c(
+  eid_vars,
+  age_vars,
+  sex_vars,
+  spq10_vars,
+  mental_health_vars,
+  adhd_vars,
+  asd_vars,
+  gwas_qc_vars,
+  genetic_pca_vars
+)
+
+```
+
+```{r Dataframe formatting and Cleaning: Compiling the master table, eval=FALSE, include=FALSE}
+# Select through fread to minimise reading time and cost
+UKB.22122025 = fread("~/rds/rds-rb643-ukbiobank2/Data_Phenotype/DataFetch_22122025/ukb704872.csv", select =all_vars) 
+# This table includes only mental health info
+UKB.09052025 = fread("~/rds/rds-rb643-ukbiobank2/Data_Phenotype/DataFetch_09052025/ukb679961.csv", select=all_vars) 
+# includes everything except "21000-0.0"
+
+# # omit people who did not finish SPQ
+UKB.22122025.f = UKB.22122025  %>% drop_na(any_of(spq10_vars))
+ 
+# # merge so we have important data for everyone had SPQ data
+UKB.f <- UKB.22122025.f %>% left_join(UKB.09052025, by = "eid", suffix = c("", ".old")) 
+# in case there are duplicated entries other than eid
+
+write.csv(UKB.f, here("UKB_master_pheno_table.txt"), row.names = FALSE)
+```
+
+```{r Sort SPQ coding, eval=FALSE, include=FALSE}
+# According to Data Code Dictionary for SPQ-10:
+# Left = Response               Right = Translated SPQ Score
+# 1	Strongly agree            = 3
+# 2	Agree                     = 2
+# 3	Disagree                  = 1
+# 4	Strongly disagree         = 0
+# -3	Prefer not to answer    = NA
+
+UKB.f = fread(here("UKB_master_pheno_table.txt"))
+
+UKB.f.recoded = UKB.f %>% 
+  mutate(across(all_of(spq10_vars), 
+                ~recode(., `1` = 3, `2` = 2, `3` = 1, `4` = 0, `-3` = NA_real_)))
+
+# No imputation for SPQ due to small questionnaire size
+
+UKB.f.recoded.naomit = UKB.f.recoded %>% drop_na(any_of(spq10_vars)) # 149,961 people left
+UKB.f.recoded.naomit.withtotalSPQ = UKB.f.recoded.naomit %>% 
+  mutate(SPQ_total = rowSums(across(all_of(spq10_vars))))
+
+write.csv(UKB.f.recoded.naomit.withtotalSPQ, here("UKB_master_pheno_table_SPQ.recoded.summed.txt"), row.names = FALSE)
+```
+
+# Participants QC - generate keep.id.list
+1. Remove Excessive heterozygosity {keep 22027-0.0 == NA}
+2. Find Reported Sex and Genetic Sex Mismatch {keep 31-0.0 == 22001-0.0, ignore sex in NA if genetic sex is present}
+3. Remove gPCA outliers using PCA1 and PCA2 to ensure genetically homogeneous white European population 
+   {keep "22009-0.1" within its mean+-5SD and "22009-0.2" within its mean+-5SD}
+
+```{r Participants QC code, eval=FALSE, include=FALSE}
+# Step 1. remove excessive heterozygosity 
+UKB.f.withtotalSPQ = fread(here("UKB_master_pheno_table_SPQ.recoded.summed.txt"))
+UKB.f.withtotalSPQ.low_hetero = filter(UKB.f.withtotalSPQ, is.na(UKB.f.withtotalSPQ$`22027-0.0`))
+
+# Step 2. exclude mismatch sex
+UKB.f.withtotalSPQ.low_hetero.withsexQC <- UKB.f.withtotalSPQ.low_hetero %>%
+  filter(
+    !is.na(`22001-0.0`) &                           # Must have genetic sex
+    (is.na(`31-0.0`) | `31-0.0` == `22001-0.0`)     # Either missing self-report OR it matches
+  )
+
+# Step 3. Remove gPCA outliers to ensure population is genetically homogeneous
+PC1_mean <- mean(UKB.f.withtotalSPQ.low_hetero.withsexQC$`22009-0.1`, na.rm = TRUE)
+PC1_sd   <- sd(UKB.f.withtotalSPQ.low_hetero.withsexQC$`22009-0.1`, na.rm = TRUE)
+PC2_mean <- mean(UKB.f.withtotalSPQ.low_hetero.withsexQC$`22009-0.2`, na.rm = TRUE)
+PC2_sd   <- sd(UKB.f.withtotalSPQ.low_hetero.withsexQC$`22009-0.2`, na.rm = TRUE)
+
+UKB.f.withtotalSPQ.low_hetero.withsexQC.homogeneous <- UKB.f.withtotalSPQ.low_hetero.withsexQC %>%
+  filter(
+    between(`22009-0.1`, PC1_mean - 5*PC1_sd, PC1_mean + 5*PC1_sd),
+    between(`22009-0.2`, PC2_mean - 5*PC2_sd, PC2_mean + 5*PC2_sd)
+  )
+
+write.csv(UKB.f.withtotalSPQ.low_hetero.withsexQC.homogeneous, file= here("UKB_master_pheno_withSPQtotal.QCed.txt"), row.names = FALSE)
+```
+
+```{r Generate formatted master phenotype table by filtering out none-AQ people and generating FID, eval=FALSE}
+AQ.keep.id = fread("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/AQ/UKBAQ_keep.id.QCed.txt")
+SPQ.id = fread(here("UKB_master_pheno_withSPQtotal.QCed.txt"))
+
+sum(!SPQ.id$eid %in% AQ.keep.id$f.eid) # 2754 SPQ population not in AQ population 
+
+# Note. These population were removed so GRM for AQ can be applied for the GWAS to keep SPQ and AQ complementary to each other.
+
+SPQ.keep.id = SPQ.id[SPQ.id$eid %in% AQ.keep.id$f.eid, ] %>%
+  mutate(FID = eid, IID = eid) %>%
+  mutate(
+    dob = as.Date(paste0(`34-0.0`, "-", `52-0.0`, "-01")),
+    age_years = round(interval(dob, `32362-0.0`) / months(1) / 12)
+  ) %>%
+  mutate(SPQ_total_scaled = as.numeric(scale(SPQ_total))) %>%
+  select(FID, IID, age_years, everything(), -eid, -`52-0.0`, -`34-0.0`, -`32362-0.0`, -dob)
+# Format and generate FID, IID and age so it can be easy sliced into mpheno, COVAR and qCOVAR for GCTA-fastGWA to run.
+# Create SPQ_total_scaled for good practice.
+
+write.table(SPQ.keep.id, file = here("UKB_master_pheno_withSPQtotal.QCed.AQfiltered.formatted.txt"), row.names = FALSE, col.names = TRUE)
+# write final formatted results for later splitting.
+```
+
+# GWAS: mpheno, COVAR and qCOVAR generation
+```{r mpheno to loop through in GWAS, eval=FALSE, include=FALSE}
+spq10_labels = c(
+  "32345-0.0" = "SPQ_smell_people",
+  "32346-0.0" = "SPQ_taste_crisps",
+  "32347-0.0" = "SPQ_hearing_electricity",
+  "32348-0.0" = "SPQ_touch_temperature",
+  "32349-0.0" = "SPQ_taste_sweets",
+  "32350-0.0" = "SPQ_touch_coinweight",
+  "32351-0.0" = "SPQ_smell_gas",
+  "32352-0.0" = "SPQ_hearing_fly",
+  "32353-0.0" = "SPQ_vision_clothing",
+  "32354-0.0" = "SPQ_vision_dust"
+)
+
+SPQ_master = fread(here("UKB_master_pheno_withSPQtotal.QCed.AQfiltered.formatted.txt"))
+SPQ_pheno = SPQ_master %>%
+  rename(!!!setNames(names(spq10_labels), spq10_labels)) %>%
+  select(FID, IID, starts_with("SPQ_"))
+
+write.table(SPQ_pheno, file = here("UKB_SPQ_pheno.txt"), row.names = FALSE, col.names = TRUE, quote=FALSE)
+```
+
+```{r discrete COVAR, eval=FALSE, include=FALSE}
+#   22001-0.0 Genetic Sex
+SPQ_COVAR = SPQ_master %>% select(FID, IID, '22001-0.0') %>% rename(gSEX = '22001-0.0')
+write.table(SPQ_COVAR, file = here("UKB_SPQ_COVAR.txt"), row.names = FALSE, col.names = TRUE, quote=FALSE)
+```
+
+```{r continous qCOVAR, eval=FALSE, include=FALSE}
+# age_years
+#  "22000-0.0"   # Genotype batch
+#  genetic_pca_vars
+
+SPQ_qCOVAR = SPQ_master %>%
+  select(FID, IID, age_years,'22000-0.0', all_of(genetic_pca_vars)) %>%
+  rename(gbatch = '22000-0.0') %>%
+  rename_with(~ paste0("gPCA", str_extract(., "(?<=\\.)\\d+")), starts_with("22009"))
+write.table(SPQ_qCOVAR, file = here("UKB_SPQ_qCOVAR.txt"), row.names = FALSE, col.names = TRUE, quote=FALSE)
+```
+
+```{bash generate mbfile, eval=FALSE, include=FALSE}
+for i in $(seq 1 22); do
+  echo "/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Bed/chr${i}"
+done > /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_pre_GWAS/UKB_SPQ_GWAS_mbfile.txt
+```
+
+# GWAS: construct and submitting slurm job
+```{r construct GWAS slurm code, eval=FALSE, include=FALSE}
+source(here("slurm_scheduler.R")) # import slurm scheduler function
+
+out_dir = "/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_GWAS/"
+
+GWAS_command = paste0(
+  "COLNAME=$(awk -v col=\"$SLURM_ARRAY_TASK_ID\" 'NR==1{print $(col+2)}' UKB_SPQ_pheno.txt)", "\n",
+  "/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/toolbox/gcta/gcta64 --fastGWA-mlm", " ",
+  "--mbfile", " ", "UKB_SPQ_GWAS_mbfile.txt", " ",
+  "--grm-sparse", " ", glue("{path_UKB.vw}GRM/UKB_AQ_GRM_SPARSE"), " ",
+  "--pheno", " ", "UKB_SPQ_pheno.txt", " ",
+  "--mpheno $SLURM_ARRAY_TASK_ID", " ",
+  "--qcovar", " ", "UKB_SPQ_qCOVAR.txt", " ",
+  "--covar", " ", "UKB_SPQ_COVAR.txt", " ",
+  "--out", " ", glue("{out_dir}GWAS_$COLNAME")
+)
+
+# construct slurm code:
+# Sensitive info are imported through .Rprofile therefore is remained hidden in this code.
+GWAS_job_name = "YG_SPQ_GWAS"
+time = "8:00:00"
+mem = "100G"
+home_dir = "/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_pre_GWAS"
+log_dir = "/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_GWAS"
+array = "1-12"
+
+submit_slurm(account = account, 
+             home_dir = home_dir, 
+             log_dir = log_dir,
+             job_name = GWAS_job_name, 
+             command = GWAS_command, 
+             time = time, 
+             mem = mem,
+             array = array)
+
+# Then in terminal do this -> sbatch /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_GWAS/YG_SPQ_GWAS.sh 
+```
+
+# GWAS Manhattan Visualisation
+```{R QQ and manhattan plot, eval=FALSE, include=FALSE}
+source("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/manhattan_and_QQ/topr_manhattan_QQ_plot_generate.R")
+```
