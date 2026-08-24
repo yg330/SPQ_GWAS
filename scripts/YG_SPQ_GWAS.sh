@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -A WARRIER-SL2-CPU
+#SBATCH -A INPUT_USER_ACCOUNT_NAME
 #SBATCH -J YG_SPQ_GWAS
 #SBATCH -D /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_pre_GWAS
 #SBATCH -o /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_GWAS/YG_SPQ_GWAS_%A_%a.log
