@@ -1,0 +1,1625 @@
+```{r setup, include=FALSE}
+# Check path variables auto load in .Rprofile
+library(here) # for relative path finding
+library(tidyverse)
+library(data.table)
+library(glue)
+
+# for phenotype correlation
+library(Hmisc)
+library(corrplot)
+
+sup_table_formatter = function(df){
+  # Splits GWAS_name (e.g. "regional_CT_bankssts.lh_GWAS") into MRI_scale, MRI_pheno, and region columns while removing all other non-important info.
+  df = df %>% separate_wider_delim(GWAS_name, "_", 
+                                    names = c("MRI_scale", "MRI_pheno", "region", NA, NA), 
+                                    too_few = "align_start", too_many = "merge")
+  
+  # Sets region to NA for global phenotypes as they have no regional parcellation.
+  df$region = ifelse(df$MRI_scale == "global", NA, df$region)
+  
+  return(df)
+}
+
+# for general visualisation
+library(patchwork)
+library(ggeffects)
+library(ggpubr)
+library(ggnewscale)
+
+# for GWAS visualisation
+library(topr)
+```
+# SPQ-10 Phenotype Only Analysis
+```{r stat description of SPQ}
+# read in needed labels and dataset 
+spq10_vars = c(
+  "32345-0.0" = "SPQ_smell_people",
+  "32346-0.0" = "SPQ_taste_crisps",
+  "32347-0.0" = "SPQ_hearing_electricity",
+  "32348-0.0" = "SPQ_touch_temperature",
+  "32349-0.0" = "SPQ_taste_sweets",
+  "32350-0.0" = "SPQ_touch_coinweight",
+  "32351-0.0" = "SPQ_smell_gas",
+  "32352-0.0" = "SPQ_hearing_fly",
+  "32353-0.0" = "SPQ_vision_clothing",
+  "32354-0.0" = "SPQ_vision_dust"
+)
+
+UKB.pheno = list(
+  UKB.SPQ = fread(glue("{path_UKB.vw}SPQ/SPQ_pre_GWAS/UKB_SPQ_pheno.txt")),
+  UKB.sex.pheno = fread(glue("{path_UKB.vw}SPQ/SPQ_pre_GWAS/UKB_SPQ_COVAR.txt")), 
+  UKB.age.pheno = fread(glue("{path_UKB.vw}SPQ/SPQ_pre_GWAS/UKB_SPQ_qCOVAR.txt"), select = c("FID", "IID", "age_years")),
+  UKB.AQ.pheno = fread(glue("{path_UKB.vw}AQ/UKBAQ_Pheno.txt"))
+)
+UKB.pheno = reduce(UKB.pheno, left_join, by = c("FID", "IID"))
+
+
+# Check stat distribution
+summary(UKB.pheno[, ..spq10_vars])
+summary(UKB.pheno[, c("SPQ_total", "SPQ_total_scaled")])
+```
+# Figure 3.3.1 Phenotypic Characteristic of SPQ total score
+```{r Panel A: Violin Distribution of SPQ score}
+# Panel A: Distribution
+SPQ.sex_stratified = UKB.pheno %>%
+  mutate(group = ifelse(gSEX == 1, "Male", "Female"))
+
+SPQ.sex_unstratified = UKB.pheno %>%
+  mutate(group = "All")
+
+panel_a.table = bind_rows(SPQ.sex_unstratified, SPQ.sex_stratified) %>%
+  mutate(group = factor(group, levels = c("All", "Male", "Female")))
+
+panel_a = ggviolin(panel_a.table, "group", "SPQ_total", fill = "group",
+                   palette = c("grey70", "#00AFBB", "#FC4E07"),
+                   add = "boxplot", 
+                   add.params = list(fill = "white", width = 0.1), 
+                   width = 0.5,
+                   adjust = 1.5,
+                   xlab = "",
+                   ylab = "SPQ-10 Total Score") +
+  stat_compare_means(comparisons = list(c("Male", "Female"), c("All", "Female"), c("Male", "All")), method = "t.test", label = "p.signif") +
+  theme(legend.position = "bottom")
+```
+```{r Panel B: Q-Q plot}
+# Panel B: Q-Q plot
+panel_b = ggplot(UKB.pheno, aes(sample = SPQ_total)) + 
+  stat_qq(alpha = 0.05, shape = 0, size = 2) + 
+  stat_qq_line(colour = "red") + 
+  labs(x = "Theoretical Quantiles", y = "Sample Quantiles") + 
+  theme_classic() + 
+  theme(panel.border = element_rect(fill = NA, color = "black", linewidth = 0.5))   
+```
+```{r Panel C: SPQ item and total score Phenotype Correlation}
+trait_order = c(
+  "SPQ_hearing_electricity", "SPQ_hearing_fly",
+  "SPQ_smell_gas",           "SPQ_smell_people",
+  "SPQ_taste_crisps",        "SPQ_taste_sweets",
+  "SPQ_touch_coinweight",    "SPQ_touch_temperature",
+  "SPQ_vision_clothing",     "SPQ_vision_dust",
+  "SPQ_total"
+)
+
+trait_order.label = tools::toTitleCase(gsub("_", " ", gsub("^SPQ_", "", trait_order)))
+trait_order.label[11] = "SPQ Total Score" # Change SPQ_total to SPQ Total Score
+
+SPQ.matrix = as.matrix(UKB.pheno[, ..trait_order])
+colnames(SPQ.matrix) = trait_order.label
+
+SPQ.cor = rcorr(SPQ.matrix)
+SPQ.cor_r.mat = SPQ.cor$r
+SPQ.cor_p.mat = SPQ.cor$P
+SPQ.cor_p.mat[is.na(SPQ.cor_p.mat)] = 0 # Self-cor in this case always count as significant
+
+# All p = 0 therefore, p_fdr will always be 0, skipping.
+SPQ.cor_r.mat.tri = which(lower.tri(SPQ.cor_r.mat, diag = TRUE), arr.ind = TRUE)
+
+panel_c.df = data.frame(
+  x = factor(trait_order.label[SPQ.cor_r.mat.tri[,2]], levels = trait_order.label),
+  y = factor(trait_order.label[SPQ.cor_r.mat.tri[,1]], levels = rev(trait_order.label)),
+  r = SPQ.cor_r.mat[SPQ.cor_r.mat.tri]
+) %>%
+  mutate(sig = ifelse(x == y, "diagonal", "FDR-corrected"))
+
+panel_c = ggplot(panel_c.df, aes(x = x, y = y)) +
+  geom_point(aes(fill = r, size = abs(r), colour = sig),
+             shape = 21, stroke = 1.2) +
+  scale_fill_gradientn(
+    colours = c("#053061","#2166ac","#f7f7f7","#d6604d","#b2182b"),
+    limits  = c(-1, 1), name = "r") +
+  scale_colour_manual(
+    values = c("FDR-corrected"   = "#222222",
+               "diagonal"        = "#cccccc"),
+    name   = "Significance",
+    guide  = guide_legend(override.aes = list(size = 4, fill = "grey70"))) +
+  scale_size_continuous(range = c(2, 10), guide = "none") +
+  scale_x_discrete(expand = expansion(add = 0.8)) +
+  scale_y_discrete(expand = expansion(add = 0.8)) +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x     = element_blank(),
+        axis.title      = element_blank(),
+        plot.background = element_rect(fill = "white", colour = NA))
+```
+```{r Panel D: multiple linear regression AQ_50 ~ SPQ_10 * age_years * gSEX}
+# find correlation between AQ and SPQ
+cor.test(UKB.pheno$aq_50_total, UKB.pheno$SPQ_total)
+
+# check if it was not affect by age by previous report
+SPQ_age_sex.lm =lm(aq_50_total ~ age_years * SPQ_total * gSEX, data = UKB.pheno) # fit model
+summary(SPQ_age_sex.lm)
+
+# add partial r as we now know age and sex significantly interact with SPQ
+ppcor::pcor.test(UKB.pheno$aq_50_total, UKB.pheno$SPQ_total, 
+          UKB.pheno[, c("age_years", "gSEX")])
+
+SPQ_age_sex.lm.pred = predict_response(SPQ_age_sex.lm, terms = c("SPQ_total", "age_years [55, 60, 65, 70, 75, 80]", "gSEX"))
+
+panel_d = ggplot() +
+  # Female (facet = 0)
+  geom_line(data = subset(SPQ_age_sex.lm.pred, facet == 0),
+            aes(x, predicted,
+                colour = as.numeric(as.character(group)),
+                group = group)) +
+  scale_colour_gradient(name = "Age (Female)",
+                        low = "#FDB5A6",
+                        high = "#8B0000") +
+  
+  new_scale_colour() + # for adding facet-different colours
+  
+  # Male (facet = 1)
+  geom_line(data = subset(SPQ_age_sex.lm.pred, facet == 1),
+            aes(x, predicted,
+                colour = as.numeric(as.character(group)),
+                group = group)) +
+  scale_colour_gradient(name = "Age (Male)",
+                        low = "#B3D9FF",
+                        high = "#003D80") +
+  
+  facet_wrap(~facet,
+             labeller = labeller(facet = c(`0` = "Female", `1` = "Male"))) +
+  
+  labs(x = "SPQ-10 total score",
+       y = "AQ-50 total score") +
+  
+  theme_bw()
+
+```
+```{r Construct Figure 3.3.1 A-D}
+# combined figure:
+combined.fig = panel_a + panel_b  + panel_c + panel_d + 
+  plot_annotation(tag_levels = "A")
+
+combined.fig
+```
+```{r save figure 3.3.1A-D, eval=FALSE, include=FALSE}
+ggsave(here("SPQ_figure_tables/F3.3.1A_to_D_v1.pdf"), plot = combined.fig, dpi = "retina", units = "in", width = 15, height = 12)
+ggsave(here("SPQ_figure_tables/F3.3.1A_to_D_v1.png"), plot = combined.fig, dpi = "retina", units = "in", width = 15, height = 12)
+```
+# Chapter 3.3.2 GWAS: genetic correlation and phenotypic correlation matrix similarity
+## genomicSEM: multivariate ldsc within 
+```{r multivariate ldsc, eval=FALSE, include=FALSE}
+SPQ_GWAS.munged = list.files(here("SPQ_post_GWAS/ldsc_munged/"), pattern = ".sumstats.gz", full.names = TRUE)
+SPQ_GWAS.munged.names = gsub(".sumstats.gz","",basename(SPQ_GWAS.munged))
+
+setwd(here("SPQ_post_GWAS/ldsc_h2_and_rg"))
+
+# SPQ_10 multivariate ldsc results
+SPQ_10.ldsc = ldsc(
+  traits = SPQ_GWAS.munged.items,
+  sample.prev = rep(NA, 10),     # continuous GWAS
+  population.prev = rep(NA, 10), # continuous GWAS
+  ld = glue("{path_vw}ldsc/eur_w_ld_chr/"),
+  wld = glue("{path_vw}ldsc/eur_w_ld_chr/"),
+  trait.names = SPQ_GWAS.munged.items.names,
+  stand = TRUE   # also outputs genetic correlation matrix — useful for checking
+)
+
+# !! This step was ran locally as basic hpc interactive R environment set up as 23/03/2026 with R 4.3.1 default setting will have error message:
+# "Error in crossprod(N.vec * (sqrt(n.blocks)/m)) : "crossprod" is not a BUILTIN function" !!
+
+# local script save in here("SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_multivariate_ldsc.R")
+```
+```{r within SPQ_10 rg comparison}
+load("/rds/project/rds-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_10.ldsc.RData")
+
+geno_cor = SPQ_10.ldsc[["S_Stand"]]
+colnames(geno_cor) =  paste0("SPQ_", colnames(geno_cor))
+rownames(geno_cor) = colnames(geno_cor)
+geno_cor = geno_cor[trait_order, trait_order]
+corrplot(geno_cor, 
+         method = "color",
+         addCoef.col = "black",
+         number.cex = 0.7,
+         tl.cex = 0.8,
+         cl.cex = 0.8) 
+```
+```{r visualise ldsc results and output result table}
+SPQ_10_ldsc.h2.table = data.frame(
+  trait = colnames(SPQ_10.ldsc$S),
+  h2        = diag(SPQ_10.ldsc$S),
+  intercept = diag(SPQ_10.ldsc$I),
+  SE = "TODO"
+)
+
+# SPQ_10_ldsc.rg.table
+
+# save table
+write.csv(ldsc_table, here("SPQ_post_GWAS/ldsc_h2_table.csv"), row.names = FALSE)
+```
+## genetic correlation and phenotypic correlation matrix similarity
+```{r Mental Test SPQ_rg_cor vs SPQ_pheno_cor}
+load(here("SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_10.ldsc.RData"))
+SPQ_10.rg = SPQ_10.ldsc$S_Stand
+rownames(SPQ_10.rg) = colnames(SPQ_10.rg)
+
+trait_order.rg = gsub("SPQ_", "", trait_order)
+trait_order.label.rg = tools::toTitleCase(gsub("_", " ", gsub("^SPQ_", "", trait_order)))
+trait_order.label.rg[11] = "SPQ Total Score" # Change SPQ_total to SPQ Total Score
+
+SPQ.rg.matrix = SPQ_10.rg[trait_order.rg, trait_order.rg]
+rownames(SPQ.rg.matrix) = trait_order.label.rg
+colnames(SPQ.rg.matrix) = trait_order.label.rg
+
+vegan::mantel(SPQ.cor_r.mat, SPQ.rg.matrix)
+```
+
+# Supplementary Table 3.1 Heritability
+
+This section was done by genomicSEM munge() was done on hpc in the ldsc_munged folder but the next step ldsc() was conducted locally with same R version. This was due to the hpc set up as 23/03/2026 with R 4.3.1 default setting will have error message: "Error in crossprod(N.vec * (sqrt(n.blocks)/m)) : "crossprod" is not a BUILTIN function"
+
+(2) To check original ldsc() code used: source(here("SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_multivariate_ldsc.R"))
+
+(3) Local generated result and munge log are saved in here("SPQ_post_GWAS/ldsc_h2_and_rg/"), as SPQ_10.ldsc.RData and hearing_electricity.sumstats.gz_hearing_fly.sumstats.gz_smell_gas.sumstats.gz_smell_people.sumstats._ldsc.log
+
+```{r genomicSEM ldsc munge and run, eval=FALSE, include=FALSE}
+# prep input
+SPQ_GWAS = list.files(here("SPQ_GWAS"), full.names = TRUE, pattern = ".fastGWA", )
+SPQ_GWAS = SPQ_GWAS[SPQ_GWAS != "/rds/project/rds-Nl99R8pHODQ/UKB/SPQ/SPQ_GWAS/GWAS_SPQ_total_scaled.fastGWA"] 
+# remove scaled total score because SPQ_total GWAS result is the same as SPQ_total_scared GWAS.
+
+trait_names = gsub("^GWAS_SPQ_|\\.fastGWA$", "", basename(SPQ_GWAS))
+
+setwd(here("SPQ_post_GWAS/ldsc_munged/")) # change path temporarily as munge() only writes to current folder
+
+munge(
+  files = SPQ_GWAS,
+  trait.names = trait_names,
+  hm3 = glue("{path_vw}ldsc/eur_w_ld_chr/w_hm3.snplist"),
+  N = rep(NA, 11),              # fastGWA has SNP-specific N column, so NA lets it read from file
+  info.filter = 0.9,
+  maf.filter = 0.01
+)
+
+# locally ran ldsc() script is here:
+source(here("SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_multivariate_ldsc.R"))
+
+# results saved in same folder named SPQ_10.ldsc.Rdata
+```
+
+```{r construct ldsc style h2 table from ldsc log}
+# Read log file
+rg_log = readLines(here("SPQ_post_GWAS/ldsc_h2_and_rg/hearing_electricity.sumstats.gz_hearing_fly.sumstats.gz_smell_gas.sumstats.gz_smell_people.sumstats._ldsc.log"))
+
+# Find heritability sections
+h2_idx = grep("Heritability Results for trait:", rg_log)
+
+# Function to extract one block
+extract_h2 = function(start) {
+  block = rg_log[start:(start + 10)]
+  
+  trait = sub(".*trait: ", "", block[1])
+  
+  mean_chi2 = as.numeric(sub(".*: ", "", block[grep("Mean Chi", block)]))
+  lambda_gc = as.numeric(sub(".*: ", "", block[grep("Lambda GC", block)]))
+  
+  intercept_line = block[grep("Intercept:", block)]
+  intercept = as.numeric(sub("Intercept: ([0-9.]+).*", "\\1", intercept_line))
+  intercept_se = as.numeric(sub(".*\\(([^)]+)\\).*", "\\1", intercept_line))
+  
+  h2_line = block[grep("Total Observed Scale h2", block)]
+  h2 = as.numeric(sub(".*h2: ([0-9.]+).*", "\\1", h2_line))
+  h2_se = as.numeric(sub(".*\\(([^)]+)\\).*", "\\1", h2_line))
+  
+  z = as.numeric(sub(".*h2 Z: ([0-9.]+).*", "\\1", block[grep("h2 Z", block)]))
+  
+  data.frame(
+    Trait = basename(trait),
+    h2 = h2,
+    SE = h2_se,
+    Z = z,
+    Intercept = intercept,
+    Intercept_SE = intercept_se,
+    Lambda_GC = lambda_gc,
+    Mean_Chi2 = mean_chi2
+  )
+}
+
+# Apply correctly
+ldsc_table = do.call(rbind, lapply(h2_idx, extract_h2))
+
+# Clean trait names
+ldsc_table$Trait = sub(".sumstats.gz", "", ldsc_table$Trait)
+ldsc_table$Trait[ldsc_table$Trait == "total"] = "SPQ total score"
+```
+
+```{r write table for ST3.1, eval=FALSE, include=FALSE}
+write_tsv(ldsc_table, here("SPQ_figure_tables/ST3.1_heritability.txt"))
+```
+
+# Supplementary Table 3.2 GWAS: s-ldsc results
+```{r write ST3.2 table}
+sldsc = fread(here("SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_total_functional_baseline.results")) %>% mutate(Enrichment_p.adj = p.adjust(Enrichment_p, method = "fdr"))
+sig.sldsc = subset(sldsc, sldsc$Enrichment_p.adj < 0.05) %>% mutate(across(where(is.numeric), ~ formatC(.x, format = "e", digits = 3)))
+write_tsv(sig.sldsc, here("SPQ_figure_tables/ST3.2_sig.sldsc.txt"))
+```
+
+# Supplementary Table 3.3 independent significant loci
+```{r Function: PLINK batch read clump files}
+clump_batch_read <- function(GWAS_name, GWAS_path) {
+  # check for NA as some do not have loci pass 5e-8 threshold or simply not available for the GWAS selected
+  valid_paths <- !is.na(GWAS_path) & GWAS_path != "" & file.exists(GWAS_path)
+  
+  # Create a list of data frames with the GWAS_name column
+  gwas_tables <- map2(GWAS_name[valid_paths], GWAS_path[valid_paths], ~ {
+    fread(.y) %>% 
+      mutate(GWAS_name = .x)
+  })
+  # Merge all tables using full_join
+  merged_table <- reduce(gwas_tables, full_join)
+  
+  return(merged_table)
+}
+```
+```{r read in and format table for clumped loci}
+SPQ_clump_name = list.files(here("SPQ_post_GWAS/PLINK_clump"), pattern = ".clumped")
+SPQ_clump_path = list.files(here("SPQ_post_GWAS/PLINK_clump"), pattern = ".clumped", full.names = TRUE)
+
+SPQ_clump.df = clump_batch_read(SPQ_clump_name, SPQ_clump_path)
+SPQ_clump.df.formatted = SPQ_clump.df %>% 
+  relocate(GWAS_name) %>% 
+  mutate(GWAS_name = gsub("GWAS_SPQ_|_clump_5_e8_r2_0.1.clumped", "", GWAS_name)) %>%
+  mutate(GWAS_name = gsub("total", "SPQ total score", GWAS_name))
+```
+```{r write table for ST3.3, eval=FALSE, include=FALSE}
+write_tsv(SPQ_clump.df.formatted, here("SPQ_figure_tables/ST3.3_independent_GWS_loci.txt"))
+```
+
+# Supplementary Figure 3.1 QQ plots for all GWAS results
+```{r Figure 3.1 Q-Q plot for SPQ GWAS}
+SPQ_GWAS_path.list = list.files(here("SPQ_GWAS/"), pattern = ".fastGWA", full.names = TRUE)
+SPQ_GWAS_path.list = SPQ_GWAS_path.list[basename(SPQ_GWAS_path.list) != "GWAS_SPQ_total_scaled.fastGWA"]
+
+total_SPQ_GWAS_path = SPQ_GWAS_path.list[grepl("total", SPQ_GWAS_path.list)]
+item_SPQ_GWAS_path = SPQ_GWAS_path.list[!grepl("total", SPQ_GWAS_path.list)]
+item_SPQ_GWAS_path = sort(item_SPQ_GWAS_path)
+
+SPQ_GWAS_path_path.ordered <- c(item_SPQ_GWAS_path, total_SPQ_GWAS_path)
+
+for (SPQ_GWAS.file in SPQ_GWAS_path_path.ordered){
+  
+  SPQ_GWAS.name = gsub("GWAS_SPQ_|.fastGWA|.gz", "", basename(SPQ_GWAS.file))
+  SPQ_GWAS = fread(SPQ_GWAS.file, select = c("CHR", "SNP", "POS", "P"))
+  
+  qq.plot = qqtopr(SPQ_GWAS, n_variants = nrow(SPQ_GWAS))
+
+  ggsave(filename = here(glue("SPQ_post_GWAS/manhattan_and_QQ/QQ_{SPQ_GWAS.name}.png")), 
+         plot = qq.plot, 
+         width = 10, height = 6, 
+         units = "in",
+         dpi = 300)
+}
+```
+
+# Figure 3.3.2 Miami Plot for SPQ-10 total score (top) and item-level SPQ scores overlapping with each other (bottom)
+```{r function for read in and format GWAS dataset for topr plot}
+topr_GWAS_formatter = function(GWAS_path.list){
+  current_list = list()
+  
+  for (GWAS_path in GWAS_path.list) {
+    current_GWAS.name = gsub(".fastGWA|.gz", "", basename(GWAS_path))
+    
+    current_manhattan.df = lapply(GWAS_path, function(file) {
+      fread(file, select = c("CHR", "POS", "SNP", "BETA", "P")) %>%
+        filter(P < 1e-3) %>%
+        mutate(CHR = ifelse(CHR == "23", "X", CHR)) %>% 
+        rename(CHROM = CHR)
+    })
+    
+    names(current_manhattan.df) = current_GWAS.name
+    
+    current_list = c(current_list, current_manhattan.df)
+  }
+  return(current_list)
+}
+```
+```{r read in and format GWAS dataset for topr plot, eval=FALSE, include=FALSE}
+# Figure 4a Miami Plot for each phenotypes - no annotation on genes just loci colouring for regional only or shared across global and regional phenotypes
+SPQ_GWAS_path = list.files(here("SPQ_GWAS"), pattern = ".fastGWA", full.names = TRUE)
+SPQ_GWAS_path = SPQ_GWAS_path[SPQ_GWAS_path != here("SPQ_GWAS/GWAS_SPQ_total_scaled.fastGWA")]
+
+SPQ_GWAS.df.list = topr_GWAS_formatter(SPQ_GWAS_path)
+saveRDS(SPQ_GWAS.df.list, here("SPQ_post_GWAS/manhattan_and_QQ/SPQ_GWAS.df.list.rds")) # save for ease of future retrieval 
+```
+```{r Figure 3.3.2 Miami Plot for SPQ-10 total (top) and item level (bottom)}
+SPQ_GWAS.df.list = readRDS(here("SPQ_post_GWAS/manhattan_and_QQ/SPQ_GWAS.df.list.rds"))
+SPQ_GWAS_top = SPQ_GWAS.df.list[["GWAS_SPQ_total"]]
+SPQ_GWAS_bottom = SPQ_GWAS.df.list[names(SPQ_GWAS.df.list) != "GWAS_SPQ_total"]
+
+SPQ_GWAS_bottom.flatten = SPQ_GWAS_bottom %>%
+  bind_rows(.id = "GWAS_name")
+
+# generate panel a for top total SPQ score
+SPQ_GWAS_top.bg = SPQ_GWAS_top %>% filter(P >= 5e-08)
+SPQ_GWAS_top.sig =SPQ_GWAS_top %>% filter(P <  5e-08)
+
+panel_a <- manhattan(
+  list(SPQ_GWAS_top.sig, SPQ_GWAS_top.bg),
+  color                = c("#A50026", "#DDDDDD"),
+  even_no_chr_lightness = c(0.5, 0.5), # no switching colours
+  sign_thresh          = 5e-08,
+  sign_thresh_color    = "red",
+  sign_thresh_linetype = "solid",
+  build                = "37",
+  scale = 1
+) + theme(legend.position = "none")
+
+# generate panel b for bottom item SPQ score
+SPQ_GWAS_bottom.flatten.bg = SPQ_GWAS_bottom.flatten %>% filter(P >= 5e-08)
+SPQ_GWAS_bottom.sig = lapply(SPQ_GWAS_bottom, function(df) filter(df, P < 5e-08))
+SPQ_GWAS_bottom.sig = SPQ_GWAS_bottom.sig[sapply(SPQ_GWAS_bottom.sig, nrow) > 0]
+
+wong_palette_8.edt <- c(
+  "#009E73", # bluish green = hearing_fly
+  "#E69F00", # orange = smell_gas
+  "#D55E00", # vermillion = smell_people
+  "#F0E442", # yellow = test_crisps
+  "#56B4E9", # sky blue = touch_coinweight
+  "#0072B2", # blue = touch_temperature
+  "#CC79A7",  # reddish purple = vision_clothing
+  "#332288"  # indigo = vision_dust
+)
+
+legend_labels_bottom = c("non-sig.SNPs", gsub("GWAS_SPQ_", "", names(SPQ_GWAS_bottom.sig)))
+legend_labels_bottom = tools::toTitleCase(gsub("_", ": ", legend_labels_bottom))
+
+panel_b = manhattan(
+  c(list(SPQ_GWAS_bottom.flatten.bg), SPQ_GWAS_bottom.sig), ntop = 9,
+  color                = c("#DDDDDD", wong_palette_8.edt),
+  even_no_chr_lightness = c(rep(0.5, 10)), # no switching colours
+  legend_labels = legend_labels_bottom,
+  sign_thresh          = 5e-08,
+  sign_thresh_color    = "red",
+  sign_thresh_linetype = "solid",
+  build                = "37",
+  scale = 1
+)
+
+combined_plot = panel_a / panel_b +
+  plot_annotation(tag_levels = "A")
+```
+```{r save F3.3.2 eval=FALSE, include=FALSE}
+ggsave(filename = here("SPQ_figure_tables/F3.3.2.png"), 
+        plot = combined_plot, 
+        width = 10, height = 6, 
+        units = "in",
+        dpi = 300)
+
+ggsave(filename = here("SPQ_figure_tables/F3.3.2.pdf"), 
+        plot = combined_plot, 
+        width = 10, height = 6, 
+        units = "in",
+        dpi = 300)
+```
+
+
+
+# Supplementary  Table 3.4 MAGMA Tissue Enrichment Results
+```{r Read in and prep ST3.4} 
+# Format table for Tissue-enrichment Results
+magma_tissue_results <- list.files(here("SPQ_post_GWAS/FUMA"), pattern = "magma_exp_gtex_v8.*", full.names = TRUE, recursive = TRUE)
+magma_tissue_results.df = lapply(magma_tissue_results, function(f) {
+  df = fread(f, skip = "CONDITIONED_HIDDEN")
+  df[, Trait := basename(dirname(f))]
+  df[, level := ifelse(grepl("ts_general", f), "GTEx v8 general 30 tissue", "GTEx v8 53 tissue")]
+  df[, p.fdr_panel := p.adjust(P, method = "fdr")]
+  return(df)
+  }
+)
+magma_tissue_results.aggregated = reduce(magma_tissue_results.df, full_join)
+
+magma_tissue_results.aggregated = magma_tissue_results.aggregated %>% 
+  mutate(FULL_NAME = ifelse(is.na(FULL_NAME), VARIABLE, FULL_NAME),
+         p.fdr_experiment = p.adjust(P, method = "fdr")) %>%
+  select(-VARIABLE, -TYPE) %>%
+  rename(Panel_Name = FULL_NAME, Panel_level = level) %>%
+  relocate(Trait, Panel_Name, Panel_level)
+
+# Add Brainspan Results
+magma_brainspan_results <- list.files(here("SPQ_post_GWAS/FUMA"), pattern = "magma_exp_bs_.*", full.names = TRUE, recursive = TRUE)
+magma_brainspan_results.df = lapply(magma_brainspan_results, function(f) {
+  df = fread(f, skip = "CONDITIONED_HIDDEN")
+  df[, Trait := basename(dirname(f))]
+  df[, level := ifelse(grepl("bs_age", f), "Brainspan 29 Ages", "Brainspan 11 Developmental Stages")]
+  df[, p.fdr_panel := p.adjust(P, method = "fdr")]
+  return(df)
+  }
+)
+magma_brainspan_results.aggregated = reduce(magma_brainspan_results.df, full_join)
+magma_brainspan_results.aggregated = magma_brainspan_results.aggregated %>% 
+  mutate(p.fdr_experiment = p.adjust(P, method = "fdr")) %>%
+  select(-TYPE) %>%
+  rename(Panel_Name = VARIABLE, Panel_level = level) %>%
+  relocate(Trait, Panel_Name, Panel_level)
+
+magma_full_results.aggregated = full_join(magma_tissue_results.aggregated, magma_brainspan_results.aggregated)
+```
+```{r write ST3.4, eval=FALSE, include=FALSE}
+write_tsv(magma_full_results.aggregated, here("SPQ_figure_tables/ST3.4_magma_tissue_enrichment.txt"))
+```
+# Supplementary Table 3.5 MAGMA Cell Type Results
+```{r Read in and prep ST3.5}
+magma_cell_results.summarised = fread(list.files(here("SPQ_post_GWAS/FUMA_celltype/"), pattern = "step1_", full.names = TRUE, recursive = TRUE))
+write_tsv(magma_cell_results.summarised, here("SPQ_figure_tables/ST3.5_magma_cell_enrichment.txt"))
+```
+# Figure 3.3.3 Tissue Enrichment Across SPQ GWAS
+```{r Assemble F3.3.3}
+wong_palette_9.edt <- c(
+  "SPQ_total_score"         = "#A50026",
+  "SPQ_hearing_fly"         = "#009E73",
+  "SPQ_hearing_electricity" = "#113711",
+  "SPQ_smell_gas"           = "#E69F00",
+  "SPQ_smell_people"        = "#D55E00",
+  "SPQ_taste_crisps"        = "#F0E442",
+  "SPQ_touch_coinweight"    = "#56B4E9",
+  "SPQ_touch_temperature"   = "#0072B2",
+  "SPQ_vision_clothing"     = "#CC79A7",
+  "SPQ_vision_dust"         = "#332288"
+)
+
+tissue_order <- c(
+  "Brain",
+  "Cortex",
+  "Frontal cortex",
+  "Anterior cingulate cortex",
+  "Amygdala",
+  "Hippocampus",
+  "Hypothalamus",
+  "Caudate",
+  "Putamen",
+  "Nucleus accumbens",
+  "Substantia nigra",
+  "Cerebellar hemisphere",
+  "Cerebellum"
+)
+
+magma_tissue_results.summarised <- fread(here("SPQ_figure_tables/ST3.3_magma_tissue_enrichment.txt")) %>% 
+  filter(p.fdr_panel < 0.05) %>%
+  mutate(
+    neglog10P = -log10(p.fdr_panel),
+    sig_experiment = ifelse(p.fdr_experiment < 0.05, "*", ""),
+    Panel_Name = gsub("Brain_", "", Panel_Name),
+    Panel_Name = recode(
+      Panel_Name,
+      "Anterior_cingulate_cortex_BA24"  = "Anterior cingulate cortex",
+      "Caudate_basal_ganglia"           = "Caudate",
+      "Frontal_Cortex_BA9"              = "Frontal cortex",
+      "Nucleus_accumbens_basal_ganglia" = "Nucleus accumbens",
+      "Putamen_basal_ganglia"           = "Putamen",
+      "Substantia_nigra"                = "Substantia nigra",
+      "Cerebellar_Hemisphere"           = "Cerebellar hemisphere"
+    ),
+    Panel_Name = factor(Panel_Name, levels = tissue_order),    
+    Panel_level = factor(Panel_level, levels = c("GTEx v8 general 30 tissue", "GTEx v8 53 tissue")),
+    Trait = factor(Trait, levels = c("SPQ_total_score", "SPQ_smell_people", 
+                                     "SPQ_hearing_electricity", "SPQ_hearing_fly", "SPQ_touch_temperature")))
+
+F3.3.3 = magma_tissue_results.summarised %>% 
+  ggplot(aes(x = Panel_Name, y = neglog10P, fill = Trait)) +
+  geom_col(
+    position = position_dodge2(preserve = "single"),
+    width = 0.9,
+    linewidth = 0.5) +
+  geom_text(
+    aes(label = sig_experiment),
+    position = position_dodge2(
+    width = 0.9,
+    preserve = "single"),
+    vjust = -0.1,
+    size = 4) +
+  scale_fill_manual(
+  values = wong_palette_9.edt,
+  labels = c(
+    SPQ_total_score = "Total score",
+    SPQ_hearing_electricity = "Hearing: Electricity",
+    SPQ_hearing_fly = "Hearing: Fly",
+    SPQ_smell_people = "Smell: People",
+    SPQ_touch_temperature = "Touch:\nTemperature")) +
+  facet_grid(
+    ~Panel_level,
+    scales = "free_x",
+    space = "free_x") +
+  labs(
+    x = NULL,
+    y = "-log10(P_FDR)",
+    fill = "SPQ Trait") +
+  theme_pubr(base_size = 12) +
+  theme(
+    axis.text.x = element_text(
+      angle = 30,
+      hjust = 1),
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    strip.text = element_text(size = 10),
+    strip.clip = "on")
+```
+```{r write F3.3.3}
+ggsave(filename = here("SPQ_figure_tables/F3.3.3.png"), 
+        plot = F3.3.3, 
+        width = 10, height = 6, 
+        units = "in",
+        dpi = 300)
+
+ggsave(filename = here("SPQ_figure_tables/F3.3.3.pdf"), 
+        plot = F3.3.3, 
+        width = 10, height = 6, 
+        units = "in",
+        dpi = 300)
+```
+
+# Supplementary Table 3.6 All sig.Genes prioritised based on MAGMA, H-MAGMA and SMR
+```{r magma and h-magma results}
+magma_gene_results = list.files(here("SPQ_post_GWAS/gene_prioritisation/magma_hmagma/"), pattern = ".genes.out", full.names = TRUE)
+magma_gene_results.df = lapply(magma_gene_results, function(f) {
+  df = fread(f)
+  df[, method := gsub("SPQ_total_|.genes.out", "", basename(f))]
+  df[, p.bon := p.adjust(P, method = "bonferroni")]
+  return(df)
+  }
+)
+magma_gene_results.df.f = magma_gene_results.df |>
+  lapply(\(x)
+    x[, .(
+      GENE,
+      method,
+      p.bon)]) |> rbindlist(fill = TRUE)
+
+magma_gene_results.df.f = magma_gene_results.df.f[p.bon < 0.05]
+```
+```{r xQTL with SMR: metabrain and GTEX v10 - brain-related QTLs}
+SMR_gene_results = list.files(here("SPQ_post_GWAS/gene_prioritisation/SMR/"), pattern = ".tsv", full.names = TRUE)
+SMR_gene_results = SMR_gene_results[!grepl("pSMR", SMR_gene_results)]
+
+SMR_gene_results.df = lapply(SMR_gene_results, function(f) {
+  df = fread(f)
+  df[, p_SMR.bon := p.adjust(p_SMR, method = "bonferroni"), by = qtl_name]
+  return(df)
+  }
+)
+
+SMR_gene_results.df[[2]] = SMR_gene_results.df[[2]] %>% rename(index = Gene)
+SMR_gene_results.df.f = SMR_gene_results.df |>
+  lapply(\(x)
+    x[, .(
+      index,
+      qtl_name,
+      gene_id,
+      p_SMR.bon,
+      p_HEIDI)]) |> rbindlist(fill = TRUE)
+
+SMR_gene_results.df.f = SMR_gene_results.df.f[p_SMR.bon < 0.05 & p_HEIDI>0.01]
+SMR_gene_results.df.f = SMR_gene_results.df.f %>% 
+  mutate(qtl_name = paste0("SMR_", qtl_name)) %>% 
+  rename(method = qtl_name, GENE = gene_id, GENE_SYMBOL = index)
+```
+```{r Write and integrate Supplementary Table 3.6}
+# For magma and hmagma
+magma_gene_conversion_map = fread(here("SPQ_post_GWAS/gene_prioritisation/magma_hmagma/magma_gene_annotate_gProfiler_hsapiens_2026-07-22_03-44-32.csv")) 
+# ENSEMBL -> GENE_SYMBOL conversion with annotation by https://biit.cs.ut.ee/gprofiler/convert
+magma_gene_results.df.f.a = full_join(magma_gene_results.df.f, magma_gene_conversion_map, by = join_by(GENE == initial_alias))
+magma_gene_results.df.f.a = magma_gene_results.df.f.a %>% select(GENE, method, p.bon, name, description) %>% rename(ENSEMBL = GENE, GENE_SYMBOL = name)
+
+# For SMR
+SMR_gene_conversion_map = fread(here("SPQ_post_GWAS/gene_prioritisation/SMR/SMR_gene_annotate_gProfiler_hsapiens_2026-07-22_03-56-55.csv"))
+SMR_gene_results.df.f.a = full_join(SMR_gene_results.df.f, SMR_gene_conversion_map, by = join_by(GENE_SYMBOL == initial_alias))
+SMR_gene_results.df.f.a = SMR_gene_results.df.f.a %>% select(GENE_SYMBOL, method, p_SMR.bon, p_HEIDI, GENE, description) %>% rename(ENSEMBL = GENE)
+
+# Format for ST3.5 protein-coding genes
+magma_wide <- magma_gene_results.df.f.a %>%
+  pivot_wider(
+    names_from = method,
+    values_from = p.bon,
+    names_prefix = "MAGMA_"
+  )
+
+# For SMR
+smr_wide <- SMR_gene_results.df.f.a %>% select(-p_HEIDI) %>%
+  pivot_wider(
+    id_cols = c(ENSEMBL, GENE_SYMBOL, description),
+    names_from = method,
+    values_from = c(p_SMR.bon)
+  )
+
+# Integrate Tables together and format them in wide format
+sig.gene.df = full_join(smr_wide, magma_wide, by = c("ENSEMBL", "GENE_SYMBOL", "description")) %>% relocate(ENSEMBL, GENE_SYMBOL, description)
+write_tsv(sig.gene.df, here("SPQ_figure_tables/ST3.6_sig.features_gene_prioritisation_table_raw.txt"))
+```
+
+# Table 3.1 Filtered gene prioritisation results: Protein-coding gene that had at least 2 methods agreements
+```{r Format and Write Table 3.1}
+mart = biomaRt::useMart("ensembl", "hsapiens_gene_ensembl") # mart dataset construction
+
+mart.annot = getBM(
+  attributes = c(
+    "ensembl_gene_id",
+    "hgnc_symbol",
+    "gene_biotype"
+  ),
+  filters = "ensembl_gene_id",
+  values = unique(sig.gene.df$ENSEMBL),
+  mart = mart
+)
+
+
+sig.gene.df.a = sig.gene.df %>%
+  full_join(
+    mart.annot,
+    by = c("ENSEMBL" = "ensembl_gene_id", "GENE_SYMBOL" = "hgnc_symbol")
+  ) %>% relocate(ENSEMBL, GENE_SYMBOL, gene_biotype, description)
+
+sig.gene.df.a.f = sig.gene.df.a %>% filter(gene_biotype == "protein_coding")
+sig.gene.df.a.f = sig.gene.df.a.f %>% mutate(n_support = rowSums(!is.na(across(where(is.numeric))))) %>% filter(n_support > 1)
+
+
+magma.cols <- grep("MAGMA|HMAGMA", names(sig.gene.df.a.f), value = TRUE)
+smr.cols   <- grep("^SMR", names(sig.gene.df.a.f), value = TRUE)
+
+sig.gene.df.a.f <- sig.gene.df.a.f %>%
+  mutate(
+    MAGMA_support = rowSums(!is.na(across(all_of(magma.cols)))),
+    SMR_support   = rowSums(!is.na(across(all_of(smr.cols)))),
+    Both_support  = MAGMA_support > 0 & SMR_support > 0
+  )
+
+sig.gene.df.a.f = sig.gene.df.a.f %>% select(ENSEMBL, GENE_SYMBOL, description, MAGMA_support, SMR_support, Both_support) %>% 
+  mutate(description = str_remove(description, " \\[.*$")) %>% arrange(desc(Both_support))
+
+write_tsv(sig.gene.df.a.f, here("SPQ_figure_tables/T3.1_prioritised_protein_coding_gene.txt"))
+```
+
+
+
+
+
+
+
+
+# Chapter 3.3.5 genetic correlation between SPQ and other phenotypes 
+```{r munge AQ to sumstats}
+# prep munge input
+AQ_GWAS = list.files(glue("{path_UKB.vw}AQ/GWAS"), full.names = TRUE, pattern = ".fastGWA")
+trait_names = gsub("\\.fastGWA$", "", basename(AQ_GWAS))
+
+setwd(glue("{path_UKB.vw}AQ/ldsc_munged.sumstats")) # change path temporarily as munge() only writes to current folder
+
+munge(
+  files = AQ_GWAS,
+  trait.names = trait_names,
+  hm3 = glue("{path_vw}ldsc/eur_w_ld_chr/w_hm3.snplist"),
+  N = rep(NA, 12),              # fastGWA has SNP-specific N column, so NA lets it read from file
+  info.filter = 0.9,
+  maf.filter = 0.01
+)
+```
+```{r make run_ldsc_command function}
+run_ldsc_command = function(p1_sumstats.path, p2_sumstats.path, output_name.path) {
+  
+  # Set ldsc script path and ld_chr_dir path
+  ldsc_path   = glue("{path_vw}ldsc/ldsc.py")
+  ld_chr_dir  = glue("{path_vw}ldsc/eur_w_ld_chr/")
+  
+  # Compress sumstats and current_condition into one comma-separated string
+  rg.trait.list = paste(c(p1_sumstats.path, p2_sumstats.path), collapse = ",")
+
+  # Build and run the ldsc command
+  cmd = glue(
+    "python2 {ldsc_path}",
+    " --rg {rg.trait.list}",
+    " --ref-ld-chr {ld_chr_dir}",
+    " --w-ld-chr {ld_chr_dir}",
+    " --out {output_name.path}")
+  
+  return(cmd)
+  }
+```
+```{r between Autism, ADHD, PSYCH_Traits}
+SPQ_total_sumstat = here("SPQ_post_GWAS/ldsc_munged/total.sumstats.gz")
+
+# For AQ
+AQ_sumstat = list.files(glue("{path_UKB.vw}AQ/ldsc_munged.sumstats"), pattern = ".sumstats.gz", full.names = TRUE)
+SPQ_vs_AQ_cmd = run_ldsc_command(SPQ_total_sumstat, AQ_sumstat, here("SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_vs_AQ"))
+submit_slurm(account = account,
+             job_name = "rg_SPQ_vs_autismQ", 
+             conda_env = "ldsc", 
+             command = SPQ_vs_AQ_cmd,
+             home_dir = here("SPQ_post_GWAS/ldsc_h2_and_rg"), 
+             log_dir = here("SPQ_post_GWAS/ldsc_h2_and_rg"))
+
+# For PSYCH
+PSYCH_sumstat = list.files(glue("{path_vw}ldsc/sumstats/"), pattern = ".sumstats.gz", recursive = TRUE, full.names = TRUE)
+SPQ_vs_PSYCH_cmd = run_ldsc_command(SPQ_total_sumstat, PSYCH_sumstat, here("SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_vs_PSYCH"))
+submit_slurm(account = account,
+             job_name = "rg_SPQ_vs_PSYCH", 
+             conda_env = "ldsc", 
+             time = "6:00:00",
+             command = SPQ_vs_PSYCH_cmd,
+             home_dir = here("SPQ_post_GWAS/ldsc_h2_and_rg"), 
+             log_dir = here("SPQ_post_GWAS/ldsc_h2_and_rg"))
+
+# For MRI phenotypes
+MRI_sumstat = fread(glue("{path_UKB.vw}Imaging_genetics/yg330/script_manuscript/master_GWAS_file_path.txt"), select = c("GWAS_name", "UKB_sumstats_path"))
+MRI_sumstat = sup_table_formatter(MRI_sumstat) 
+MRI_sumstat = na.omit(MRI_sumstat, cols = "UKB_sumstats_path") # remove FI_AVI since no GWAS hence sumstats exist for it.
+
+for (pheno in unique(MRI_sumstat$MRI_pheno)){
+  current_MRI_sumstat = subset(MRI_sumstat, MRI_sumstat$MRI_pheno == pheno)
+  current_SPQ_vs_MRI_cmd = run_ldsc_command(SPQ_total_sumstat, current_MRI_sumstat$UKB_sumstats_path, here(glue("SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_vs_{pheno}")))
+  submit_slurm(account = account,
+             job_name = glue("rg_SPQ_vs_{pheno}"),
+             conda_env = "ldsc",
+             time = "3:00:00",
+             command = current_SPQ_vs_MRI_cmd,
+             home_dir = here("SPQ_post_GWAS/ldsc_h2_and_rg"),
+             log_dir = here("SPQ_post_GWAS/ldsc_h2_and_rg"))
+}
+```
+```{r Other trait of interest: Anarexia, Pain and Diet Preferences}
+ldsc_path   = glue("{path_vw}ldsc/ldsc.py")
+ldsc_munge_path = glue("{path_vw}ldsc/munge_sumstats.py")
+ld_chr_dir  = glue("{path_vw}ldsc/eur_w_ld_chr/")
+hm3 = glue("{path_vw}ldsc/eur_w_ld_chr/w_hm3.snplist")
+SPQ_total = "~/rds/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_munged/total.sumstats.gz"
+
+# (base) [yg330@ws-s-41 GWAS_sumstats_of_interest]$ head GCST90444487_metabolic_symdrom_component.tsv 
+# chromosome      base_pair_location      effect_allele   other_allele    beta    standard_error  effect_allele_frequency p_value rs_id
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats GCST90444487_metabolic_symdrom_component.tsv",
+  " --snp rs_id",
+  " --a1 effect_allele",
+  " --a2 other_allele",
+  " --signed-sumstats beta,0",
+  " --p p_value",
+  " --frq effect_allele_frequency",
+  " --N 1384348",
+  " --out metabolic_symdrom",
+  " --merge-alleles {hm3}")
+
+# (base) [yg330@ws-s-41 GWAS_sumstats_of_interest]$ head chronic_pain-bgen.stats 
+# SNP     CHR     BP      GENPOS  ALLELE1 ALLELE0 A1FREQ  INFO    CHISQ_LINREG    P_LINREG        BETA    SE      CHISQ_BOLT_LMM_INF      P_BOLT_LMM_INF  CHISQ_BOLT_LMM  P_BOLT_LMM
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats multi_site_chronic_pain-bgen.stats",
+  " --snp SNP",
+  " --a1 ALLELE1",
+  " --a2 ALLELE0",
+  " --signed-sumstats BETA,0",
+  " --p P_BOLT_LMM",
+  " --frq A1FREQ",
+  " --N  387649",
+  " --out multi_site_chronic_pain",
+  " --merge-alleles {hm3}")
+
+# (base) [yg330@ws-s-41 GWAS_sumstats_of_interest]$ zcat Poultry_Consumption_GCST90132996_buildGRCh37.tsv | head -5
+# variant_id      chromosome      base_pair_location      effect_allele   other_allele    effect_allele_frequency INFO    beta    standard_error  p_value
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats Poultry_Consumption_GCST90132996_buildGRCh37.tsv.gz",
+  " --snp variant_id",
+  " --a1 effect_allele",
+  " --a2 other_allele",
+  " --signed-sumstats beta,0",
+  " --p p_value",
+  " --frq effect_allele_frequency",
+  " --N 399716",
+  " --out poultry_consumption",
+  " --merge-alleles {hm3}")
+
+
+# (base) [yg330@ws-s-41 GWAS_sumstats_of_interest]$ zcat diet_variation_ukb-b-2909.vcf | grep -v "^##" | head -3
+# #CHROM  POS     ID      REF     ALT     QUAL    FILTER  INFO    FORMAT  UKB-b-2909
+# 1       49298   rs10399793      T       C       .       PASS    AF=0.623768     ES:SE:LP:AF:ID  -0.000329087:0.00218922:0.0555173:0.623768:rs10399793
+# 1       54676   rs2462492       C       T       .       PASS    AF=0.400421     ES:SE:LP:AF:ID  0.00264719:0.00216877:0.657577:0.400421:rs2462492
+# grep: write error: Broken pipe
+
+# zcat diet_variation_ukb-b-2909.vcf | grep -v "^#" | awk -vOFS="\t" '
+# BEGIN {print "SNP","A1","A2","BETA","SE","P","FRQ"}
+# {
+#   split($10, val, ":");
+#   # val: ES:SE:LP:AF:ID
+#   print val[5], $5, $4, val[1], val[2], 10^-val[3], val[4]
+# }' > diet_variation_formatted.tsv
+  
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats diet_variation_formatted.tsv",
+  " --snp SNP",
+  " --a1 A1",
+  " --a2 A2",
+  " --signed-sumstats BETA,0",
+  " --p P",
+  " --frq FRQ",
+  " --N 460884",
+  " --out diet_variation",
+  " --merge-alleles {hm3}")
+
+cmd = glue(
+  "python2 {ldsc_path}",
+  " --rg {SPQ_total},metabolic_symdrom.sumstats.gz,multi_site_chronic_pain.sumstats.gz,poultry_consumption.sumstats.gz,diet_variation.sumstats.gz",
+  " --ref-ld-chr {ld_chr_dir}",
+  " --w-ld-chr {ld_chr_dir}",
+  " --out SPQ_rg_part2")
+
+# PGC_anorexia
+
+# zcat pgcAN2.2019-07.vcf.tsv.gz | grep -v "^##" > pgcAN2_clean.tsv
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats pgcAN2_clean.tsv",
+  " --snp ID",
+  " --a1 ALT",
+  " --a2 REF",
+  " --signed-sumstats BETA,0",
+  " --p PVAL",
+  " --N-cas-col NCAS",
+  " --N-con-col NCON",
+  " --out anorexia_nervosa",
+  " --merge-alleles {hm3}")
+
+# rg
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/ldsc.py --rg ~/rds/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_munged/total.sumstats.gz,metabolic_symdrom.sumstats.gz,multi_site_chronic_pain.sumstats.gz,poultry_consumption.sumstats.gz,diet_variation.sumstats.gz,anorexia_nervosa.sumstats.gz --ref-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ --w-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ --out SPQ_rg_part2
+```
+```{r Remaining missing traits: Pain, migrain, BIP and sleep phenotypes}
+# Migraine
+
+# zcat open_GWAS_diagnosed_migraine_ukb-b-13190.vcf | \
+#   awk 'BEGIN{OFS="\t"; print "SNP","CHR","POS","REF","ALT","AF","BETA","SE","P"}
+#        !/^#/ {
+#          split($10, s, ":");
+#          p = 10^(-s[3]);
+#          print s[5], $1, $2, $4, $5, s[4], s[1], s[2], p
+#        }' | gzip > migraine_flat.tsv.gz
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats migraine_flat.tsv.gz",
+  " --snp SNP",
+  " --a1 ALT",
+  " --a2 REF",
+  " --signed-sumstats BETA,0",
+  " --p P",
+  " --N 463010",
+  " --out migraine_munged",
+  " --merge-alleles {hm3}")
+
+# Self-report headache from UKB 
+
+# zcat openGWAS_self_report_headache_ukb-b-12623.vcf | \
+#   awk 'BEGIN{OFS="\t"; print "SNP","CHR","POS","REF","ALT","AF","BETA","SE","P"}
+#        !/^#/ {
+#          split($10, s, ":");
+#          p = 10^(-s[3]);
+#          print s[5], $1, $2, $4, $5, s[4], s[1], s[2], p
+#        }' | gzip > headache_flat.tsv.gz
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats self_report_headache_flat.tsv.gz",
+  " --snp SNP",
+  " --a1 ALT",
+  " --a2 REF",
+  " --signed-sumstats BETA,0",
+  " --p P",
+  " --N 462933",
+  " --out self_report_headache_munged",
+  " --merge-alleles {hm3}")
+
+# !! Muskeletal pain latent factor is not workable, missing A1 and A2 and is not passing harmonised GWAS catalogue test. !!
+
+# Neuroticism
+# (base) [yg330@ws-s-41 data]$ zcat Nat_2018_sumstats_neuroticism_ctg_format.txt | head
+# RSID    SNP     CHR     POS     A1      A2      EAF_UKB MAF_UKB Z       P       N       INFO_UKB
+# rs12184267      1:715265:C_T    1       715265  T       C       0.0366377       0.0366377       1.073   0.2831  367773  0.926915
+# rs12184277      1:715367:A_G    1       715367  A       G       0.9632305       0.0367695       -0.83   0.4068  368144  0.931148
+
+# renamed SNP to CHR_POS_ALLELE so ldsc won't be confused 
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats Nat_2018_sumstats_neuroticism_clean.txt.gz",
+  " --snp RSID",
+  " --a1 A1",
+  " --a2 A2",
+  " --signed-sumstats Z,0",
+  " --p P",
+  " --N-col N",
+  " --info INFO_UKB",
+  " --out neuroticism_2018_munged",
+  " --merge-alleles {hm3}")
+
+# back pain
+ # zcat Sakaue_backpain_ebi-a-GCST90018797.vcf.gz | \
+ #  awk 'BEGIN{OFS="\t"; print "SNP","CHR","POS","REF","ALT","AF","BETA","SE","P"}
+ #       !/^#/ {
+ #         split($10, s, ":");
+ #         p = 10^(-s[3]);
+ #         print s[5], $1, $2, $4, $5, s[4], s[1], s[2], p
+ #       }' | gzip > backpain_flat.tsv.gz
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats backpain_flat.tsv.gz",
+  " --snp SNP",
+  " --a1 ALT",
+  " --a2 REF",
+  " --signed-sumstats BETA,0",
+  " --p P",
+  " --N 468269",
+  " --out backpain_munged",
+  " --merge-alleles {hm3}")
+
+# abdomen pain
+
+# zcat upper_abdomen_pain_ukb-b-6608.vcf.gz | \
+#   awk 'BEGIN{OFS="\t"; print "SNP","CHR","POS","REF","ALT","AF","BETA","SE","P"}
+#        !/^#/ {
+#          split($10, s, ":");
+#          p = 10^(-s[3]);
+#          print s[5], $1, $2, $4, $5, s[4], s[1], s[2], p
+#        }' | gzip > upper_abdomen_pain_flat.tsv.gz
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats upper_abdomen_pain_flat.tsv.gz",
+  " --snp SNP",
+  " --a1 ALT",
+  " --a2 REF",
+  " --signed-sumstats BETA,0",
+  " --p P",
+  " --N 463010",
+  " --out upper_abdomen_pain_munged",
+  " --merge-alleles {hm3}")
+
+# joint pain
+
+# zcat joint_pain_ukb-b-13019.vcf.gz | \
+#   awk 'BEGIN{OFS="\t"; print "SNP","CHR","POS","REF","ALT","AF","BETA","SE","P"}
+#        !/^#/ {
+#          split($10, s, ":");
+#          p = 10^(-s[3]);
+#          print s[5], $1, $2, $4, $5, s[4], s[1], s[2], p
+#        }' | gzip > joint_pain_flat.tsv.gz
+
+cmd = glue(
+  "python2 {ldsc_munge_path}",
+  " --sumstats joint_pain_flat.tsv.gz",
+  " --snp SNP",
+  " --a1 ALT",
+  " --a2 REF",
+  " --signed-sumstats BETA,0",
+  " --p P",
+  " --N 463010",
+  " --out joint_pain_munged",
+  " --merge-alleles {hm3}")
+
+# rg: BIP, pain-related phenotypes, neuroticism
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/ldsc.py --rg ~/rds/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_munged/total.sumstats.gz,BIP.sumstats.gz,backpain_munged.sumstats.gz,joint_pain_munged.sumstats.gz,migraine_munged.sumstats.gz,neuroticism_2018_munged.sumstats.gz,upper_abdomen_pain_munged.sumstats.gz,self_report_headache_munged.sumstats.gz --ref-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ --w-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ --out ~/rds/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_rg_part3
+
+# python2 /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/ldsc.py --rg ~/rds/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_munged/total.sumstats.gz,mdd2025.sumstats,ocd2025.sumstats,scz2022.sumstats --ref-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ --w-ld-chr /rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/ldsc/eur_w_ld_chr/ --out ~/rds/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_rg_part4
+```
+```{r make ldsc_rg_batch_read function}
+ldsc_rg_batch_read = function(file_path){
+  results = list()
+  
+  for (i in seq_along(file_path)){
+    current_path = file_path[i]
+    current_file = readLines(current_path)
+    
+    result_position = grep("Summary of Genetic Correlation Results", current_file)
+    start_position = result_position + 1
+    end_position = length(current_file) - 3
+    
+    current_file_formatted = current_file[start_position:end_position]
+    
+    df = fread(text = current_file_formatted)
+    
+    df$p1_base = basename(df$p1)
+    df$p1_base = gsub(".sumstats|.gz", "", df$p1_base)
+    
+    df$p2_base = basename(df$p2)
+    df$p2_base = gsub(".sumstats|.gz", "", df$p2_base)
+    
+    df$p.label = cut(df$p, breaks = c(-Inf, 0.001, 0.01, 0.05, Inf), labels = c("***", "**", "*", NA))
+    
+    df$CI = df$se * 1.96
+    
+    df = df %>% relocate(p1_base, p2_base) %>% select(-p1, -p2)
+    
+    results[[i]] = df
+  }
+  
+  return(rbindlist(results))
+}
+```
+```{r read in and save intermediate results}
+rg_results = list.files("~/rds/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_h2_and_rg", pattern = "SPQ_vs_.*.log", full.names = TRUE)
+rg_results = rg_results[!grepl("_\\d+\\.log$", rg_results)]
+rg_results.formatted = ldsc_rg_batch_read(rg_results)
+write.table(rg_results.formatted, here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_total_SPQ_vs_ALL_result.formatted.txt"), quote = FALSE, row.names = FALSE)
+
+rg_results_2 = "~/rds/hpc-work/GWAS_sumstats_of_interest/SPQ_rg_part2.log"
+rg_results.2.formatted = ldsc_rg_batch_read(rg_results_2)
+write.table(rg_results.2.formatted, here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_total_SPQ_vs_ALL_result.part2.formatted.txt"), quote = FALSE, row.names = FALSE)
+
+rg_results_3 = "~/rds/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_rg_part3.log"
+rg_results.3.formatted = ldsc_rg_batch_read(rg_results_3)
+write.table(rg_results.3.formatted, here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_total_SPQ_vs_ALL_result.part3.formatted.txt"), quote = FALSE, row.names = FALSE)
+
+rg_results_4 = "~/rds/rds-genetics_hpc-Nl99R8pHODQ/UKB/SPQ/SPQ_post_GWAS/ldsc_h2_and_rg/SPQ_rg_part4.log"
+rg_results.4.formatted = ldsc_rg_batch_read(rg_results_4)
+write.table(rg_results.4.formatted, here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_total_SPQ_vs_ALL_result.part4.formatted.txt"), quote = FALSE, row.names = FALSE)
+
+```
+```{r write table for figure}
+# Format data
+rg_results.formatted = fread(here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_total_SPQ_vs_ALL_result.formatted.txt"))
+
+rg_results.2.formatted = fread(here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_total_SPQ_vs_ALL_result.part2.formatted.txt"))
+rg_results.2.formatted[p2_base == "metabolic_symdrom", p2_base := "metabolic_syndrome"]
+
+rg_results.3.formatted = fread(here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_total_SPQ_vs_ALL_result.part3.formatted.txt"))
+rg_results.4.formatted = fread(here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_total_SPQ_vs_ALL_result.part4.formatted.txt"))
+
+rg_results.all = full_join(rg_results.formatted, rg_results.2.formatted)
+rg_results.all = full_join(rg_results.all, rg_results.3.formatted)
+rg_results.all = full_join(rg_results.all, rg_results.4.formatted)
+rg_results.all$p1_base = "SPQ_total_score"
+
+# remove GWAS lists as later found it was not valid GWAS to include for consideration in the first place (Ex. low quality GWAS; not trait of interest GWAS)
+rg_results.all.chp3 = rg_results.all %>% 
+  filter(!str_starts(p2_base, "GWAS_|Jessie|agediagnosis|SPARK|iPSYCH|autism_SPARK|autism_ipsych|asd_agediagnosis"))
+
+remove_list = c("poultry_consumption", "diet_variation", "sexualabuseUKB", "selfharmscoreUKB", "selfharmideationUKB", "physicalneglectUKB", 
+                "physicalabuseUKB", "emotionalneglectUKB", "emotionalabuseUKB", "ipsych_suicide_model2_2018", "Earlyphase_EV_2024", "Latephase_EV_2024",
+                "Latephase_RV_2024", "under6_autism_SPARKreplication", "under10_autism_SPARKreplication", "UKB_suspectedautism", "UKB_diagnosedautism",
+                "spark_singleton_autism", "over10_autism_SPARKreplication", "Finngen_r10_autism", "daner_dxLate11_HRC_cleaned", "daner_dxEarly8_HRC_cleaned",
+                "UKB_AQ_Communication", "UKB_AQ_Detail", "UKB_AQ_Discorse", "UKB_AQ_Immagination", "UKB_AQ_Routine", "UKB_AQ_social", "autism_iPSYCH_CCGWAS",
+                "All_autism_SPARKreplication", "autism_before6_spark", "Autism_iPSYCH_over12", "Autism_iPSYCH_under9", "Autism_iPSYCHonly_Warrier2022", 
+                "Autism_PGC_all", "Autism_PGC_female", "Autism_PGC_male", "autism_spark_ageafter10_exclusion", "autism_spark_ageafter10", "autism_spark_female",
+                "autism_spark_male", "autism_spark_2", "PGC.ASD.euro.all", "joint_pain_munged", "NDD_meta_HCM2024", "DBD", "migraine_munged", "MDD_als",
+                "Autism_PGC2_2017", "ocd", "scz3", "mdd") 
+
+rg_results.all.chp3 = rg_results.all.chp3 %>%
+  filter(!p2_base %in% remove_list)
+
+rg_results.all.chp3 = rg_results.all.chp3 %>% mutate(p_adj = p.adjust(p, method = "fdr"))
+
+# Add trait category for later graph generation: UPDATE ONCE MUNGE/rg finish
+rg_results.all.chp3 = rg_results.all.chp3 %>%
+  mutate(p2_catagory = case_when(
+    str_detect(p2_base, regex("autism_|up_", ignore_case = TRUE)) ~ "Unstratified and Stratified Autism",
+    str_starts(p2_base, "UKB_AQ|neuroticism") ~ "Autistic and personality traits",
+    str_starts(p2_base, "MoBa_|WALK") ~ "Early developmental phenotypes",
+    str_detect(p2_base, regex("ADHD|scz", ignore_case = TRUE)) ~ "Neurodevelopmental Conditions",
+    str_detect(p2_base, regex("BIP|Anxiety|MDD|GAD|PTSD|ipsych_|TotalPCL", ignore_case = TRUE)) ~ "Neuropsychiatric conditions",
+    str_detect(p2_base, regex("anorexia|ocd|2022_AN", ignore_case = TRUE)) ~ "Eating and compulsive psychiatric conditions",
+    str_detect(p2_base, regex("lee|intelligence", ignore_case = TRUE)) ~ "Cognitivate ability",
+    str_detect(p2_base, regex("metabolic|BMI", ignore_case = TRUE)) ~ "Metabolic and BMI-related traits",
+    str_detect(p2_base, regex("estroge|freet|shbg|testosterone", ignore_case = TRUE)) ~ "Sex hormone-related traits",
+    str_detect(p2_base, regex("insomnia|pain|headache", ignore_case = TRUE)) ~ "Pain and Sleep related traits",
+    TRUE ~ NA_character_
+  )) %>% 
+  mutate(p.label = cut(p_adj, breaks = c(-Inf, 0.001, 0.01, 0.05, Inf), labels = c("***", "**", "*", NA))) %>% 
+  mutate(p.label = gsub("NA", NA, p.label)) %>% 
+  mutate(p2_name_proper = gsub("UKB_|_munged|MoBa_|_gwas|_GWAS", "", p2_base)) %>%
+  relocate(p1_base, p2_base, p2_name_proper, p2_catagory, rg, se, CI, z, p, p_adj, p.label)
+
+write_tsv(rg_results.all.chp3, here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_results.chapter3.formatted.txt"))
+
+# (1) Unstratified and Stratified Autism
+# (2) Autistic and personality traits
+# (3) developmental milestone phenotypes
+# (4) neurodevelopmental conditions (scz; ADHD)
+# (5) Neuropsychiatric conditions (PTSD, MDD, ANX, BIP)
+# (6) Eating and compulsive psychiatric conditions
+# (7) cognitive ability (Edu, int, savant int)
+# (8) metabolic and BMI-related traits
+# (9) sex hormone related traits
+# (10) pain and sleep related traits
+```
+# Figure 3.3.6 SPQ rg graph
+```{r read in and format rg tables}
+rg_results.manformatted = fread(here("SPQ_post_GWAS/ldsc_h2_and_rg/rg_results.chapter3.manually_formatted_v2.txt"))
+
+rg_results.manformatted = rg_results.manformatted %>%
+  mutate(
+    p_adj = p.adjust(p, method = "fdr"),
+    p.label = gsub("NA", NA, cut(p_adj, breaks = c(-Inf, 0.001, 0.01, 0.05, Inf), labels = c("***", "**", "*", NA))),
+    neglog10p = -log10(p_adj),
+  ) %>% relocate(p1_base, p2_base, p2_name_proper, p2_catagory, rg, se, CI, z, p, p_adj, p.label)
+
+# set factors for plotting, set specific positions for specific traits for beauty reasons
+rg_results.manformatted = rg_results.manformatted %>%
+  mutate(
+    sort_key = case_when(
+      p2_name_proper == "Cross Psychiatric Conditions:(iPSYCH_2019)" ~ -1,  # forces to top of its category
+      p2_name_proper == "Estrogen:(male)"                            ~  1,  # forces to bottom of its category
+      p2_name_proper == "Insomnia:(Jansen_2018)"                     ~  1,  # forces to bottom of its category
+      TRUE ~ 0
+    )
+  )
+
+# Build the desired factor level order:
+# arrange by category, then by sort_key (-1 first, 0 normal, 1 last), then alphabetically within each group
+level_order = rg_results.manformatted %>%
+  distinct(p2_catagory, p2_name_proper, sort_key) %>%
+  arrange(p2_catagory, sort_key, p2_name_proper) %>%
+  pull(p2_name_proper)
+
+rg_results.manformatted = rg_results.manformatted %>%
+  mutate(p2_name_proper = factor(p2_name_proper, levels = level_order))
+```
+```{r generate Figure 3.3.6}
+rg_results.manformatted = rg_results.manformatted %>%
+  mutate(p2_name_proper = str_replace_all(p2_name_proper,
+      c("Rovira_2020" = "Rajagopal_2022",
+        "Backpain" = "Backpain:(Sakaue_2021)",
+        "Cross Psychiatric Conditions" = "PSYCH-Conditions",
+        "shbg" = "SHBG",
+        "iPSYCH_male" = "iPSYCH_2019_male",
+        "PGC:" = "PGC_",
+        "Autism:\\(Early Diagnosed\\)" = "Autism:(Zhang_2025_ed)",
+        "Autism:\\(Late Diagnosed\\)" = "Autism:(Zhang_2025_ld)")))
+
+F3.3.6 = ggplot(rg_results.manformatted, aes(x = rg, y = p2_name_proper)) +
+  geom_vline(xintercept = 0, color = "grey80") +
+  geom_errorbar(aes(xmin = rg - CI, xmax = rg + CI), color = "grey40", width = 0.2, linewidth = 0.6, orientation = "y") +
+  geom_point(size = 1) +
+  geom_text(aes(label = p.label), color = "red", size = 2, vjust = -0.025, na.rm = TRUE, alpha = 1) +
+  facet_wrap(~ p2_catagory, ncol = 2, scales = "free_y") +
+  labs(x = "Genetic correlation (rg) with SPQ total score", y = NULL) +
+  theme_pubr() +
+  theme(
+    strip.text = element_text(face = "bold", size = 10),
+    axis.text.y = element_text(size = 9, color = "grey20"),
+    legend.position = "bottom"
+  )
+```
+```{r save 3.3.6 graph, eval=FALSE, include=FALSE}
+ggsave(here("SPQ_figure_tables/F3.3.6.png"), 
+       plot = F3.3.6, 
+       width = 12.5, height = 10, 
+         units = "in",
+         dpi = 300)
+
+ggsave(here("SPQ_figure_tables/F3.3.6.pdf"), 
+       plot = F3.3.6, 
+       width = 12.5, height = 10, 
+         units = "in",
+         dpi = 300)
+```
+
+# Chapter 3.3.6 GNA
+Error in crossprod(N.vec * (sqrt(n.blocks)/m)):
+"crossprod" is not a BUILTIN function
+
+Thus moving to finish it in local. Source script as provided in R markdown named UKB_SPQ_3.3.6_GNA.Rmd
+
+# Chapter 3.3.7 PRS/PGS Traits of Interest vs SPQ score
+```{r data read in and cleaning for SPARK data, eval=FALSE, include=FALSE}
+# traits: scq, rbsr and Autism_6_factors score
+scq = fread(list.files(here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/"), full.names = TRUE, pattern = "scq"))
+scq.qc = scq %>% filter(missing_values == 0, is.na(scq_measure_validity_flag)) %>% 
+  select(subject_sp_id, family_sf_id, sex, asd, age_at_eval_months, final_score) %>% 
+  rename(scq_age_at_eval_months = age_at_eval_months, scq_final_score = final_score)
+
+rbsr = fread(list.files(here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/"), full.names = TRUE, pattern = "rbsr"))
+rbsr.qc = rbsr %>% filter(missing_values == 0, is.na(rbsr_validity_flag)) %>% 
+  select(subject_sp_id, family_sf_id, sex, asd, age_at_eval_months, 
+         i_stereotyped_behavior_score, ii_self_injurious_score, iii_compulsive_behavior_score, 
+         iv_ritualistic_behavior_score, v_sameness_behavior_score, vi_restricted_behavior_score, total_final_score) %>% 
+  rename(rbsr_age_at_eval_months = age_at_eval_months, 
+         rbsr_total_final_score = total_final_score)
+
+ASD.6f = fread(list.files(here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/"), full.names = TRUE, pattern = "sparkV5_6factor"))
+
+# imputed gPCA
+SPARK.gPCA = fread(list.files(here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/"), full.names = TRUE, pattern = "pc10_all"))
+SPARK.gPCA.qc = SPARK.gPCA %>%
+  rename(family_sf_id = V1, subject_sp_id = V2) %>%
+  rename_with(~ paste0("gPCA", 1:10), .cols = V3:V12)
+
+# SPQ PRS
+SPARK.SPQ_PRS = fread(list.files(here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/"), full.names = TRUE, pattern = "final_all_updated.profile")) 
+SPARK.SPQ_PRS.qc = SPARK.SPQ_PRS %>% select(FID, IID, SCORESUM) %>% 
+  rename(subject_sp_id = IID, family_sf_id = FID, SPQ_PRS = SCORESUM) %>% mutate(SPQ_PRS.scaled = scale(SPQ_PRS))
+
+# optional: core descriptive, basic medical, background history
+SPARK.core = fread(list.files(here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/"), full.names = TRUE, pattern = "core_descriptive"))
+SPARK.core.qc = SPARK.core %>% select(subject_sp_id, family_sf_id, sex, 
+                                                  age_at_registration_months, registration_year, 
+                                      cognitive_impairment_latest, cognitive_impairment_latest_year, id_confirmed, 
+                                      fsiq, viq, nviq, neuro_sz, gen_dx1_self_report, gen_dx2_self_report, 
+                                      dcdq_dcd, vineland_abc_ss_latest)
+
+SPARK.background = fread(list.files(here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/"), full.names = TRUE, pattern = "background"))
+SPARK.background.qc = SPARK.background %>% select(subject_sp_id, family_sf_id, age_at_eval_months, 
+                                                  smiled_age_mos, sat_wo_support_age_mos, crawled_age_mos, walked_age_mos, fed_self_spoon_age_mos, 
+                                                  used_words_age_mos, combined_words_age_mos, combined_phrases_age_mos, 
+                                                  bladder_trained_age_mos, bowel_trained_age_mos,
+                                                  cog_age_level, function_age_level, language_age_level) %>% rename(dev_age_at_eval_months = age_at_eval_months)
+
+# SPARK.med = fread(list.files(here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/"), full.names = TRUE, pattern = "medical")) 
+# kept for potential future needs but atm not used.
+
+SPARK.df.info = full_join(SPARK.core.qc, SPARK.background.qc) # no duplication
+SPARK.df.q = full_join(scq.qc, rbsr.qc) # no duplication
+SPARK.df.g = left_join(SPARK.SPQ_PRS.qc, SPARK.gPCA.qc) # no duplication
+
+SPARK.df_m1 = full_join(SPARK.df.info, SPARK.df.q) # no duplication
+SPARK.df_m2 = full_join(SPARK.df_m1, SPARK.df.g) # no duplication
+SPARK.df_m3 = full_join(SPARK.df_m2, ASD.6f) # no duplication
+
+SPARK.df.all = SPARK.df.m3 %>% mutate(across(where(is.character), ~ na_if(trimws(.x), ""))) %>%   # whitespace == NA
+  mutate(across(where(is.numeric), ~ na_if(.x, 888))) %>% # 888 as non-applicable from SPARK manual: treat as NA for PRS model
+  filter(!is.na(sex), !is.na(SPQ_PRS), !is.na(gPCA1)) %>% # remove subjects that not comparable with PRS modelling
+  filter(family_sf_id != "SF0006897") %>% # Removal of family as SPARK manual warned: SF0006897
+  filter(is.na(gen_dx1_self_report), is.na(gen_dx2_self_report)) # filter for people without genetic diagnosis of syndromic conditions
+
+write_tsv(SPARK.df.all, here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/SPARK.df.all.txt"))
+```
+```{r write function for PRS modeling, extraction and results formatting}
+# Incremental R2 extraction of predictor (for graphing)
+PRS.incR2.extract = function(data, outcome, predictor, covariates) {
+  m_base = lm(reformulate(covariates, outcome), data = data)
+  m_full = lm(reformulate(c(covariates, predictor), outcome), data = data)
+  
+  coef_table = coef(summary(m_full))
+  
+  components = str_split(predictor, ":")[[1]]
+  match_row = which(sapply(rownames(coef_table), function(rn) {
+    all(sapply(components, function(comp) grepl(comp, rn, fixed = TRUE)))
+  }))
+  
+  if (length(match_row) != 1) {
+    stop(sprintf("Expected exactly 1 coefficient match for predictor '%s' in outcome '%s', found %d: %s",
+                  predictor, outcome, length(match_row), 
+                  paste(rownames(coef_table), collapse = ", ")))
+  }
+  
+  est = coef_table[match_row, ]
+
+  tibble(
+    outcome     = outcome,
+    predictor   = predictor,
+    inc.R2      = summary(m_full)$adj.r.squared - summary(m_base)$adj.r.squared,
+    association = if_else(est["Estimate"] < 0, "negative", "positive"),
+    p.val       = est["Pr(>|t|)"]
+  )
+}
+
+# Model fit Extraction
+PRS.model.fit.extract = function(model, predictor) {
+  s = summary(model)
+  glance(model) %>%                     # r.squared, adj.r.squared, F-stat, etc.
+    mutate(
+      outcome     = all.vars(formula(model))[1],
+      predictor   = predictor,
+    ) %>%
+    select(outcome, predictor, r.squared, adj.r.squared, everything())
+}
+
+# Full coefficient table extraction
+PRS.extract.full_summary <- function(model, predictor) {
+  library(broom)
+  broom::tidy(model, conf.int = TRUE) %>%
+    mutate(outcome     = all.vars(formula(model))[1],
+           predictor   = predictor,
+           across(where(is.numeric) & !matches("^p.value$"), ~ round(.x, 3))) # no round for p.value
+}
+
+# covariate list change resolution
+resolve_covs = function(covariate, out) if (is.list(covariate)) covariate[[out]] else covariate
+
+PRS.run_models = function(data, outcomes, predictors, covariates) {
+  library(broom)
+  combos = expand_grid(outcome = outcomes, predictor = predictors)
+  results = pmap(combos, function(outcome, predictor) {
+    covs   = resolve_covs(covariates, outcome)
+    m_full = lm(reformulate(c(covs, predictor), outcome), data = data)
+    list(
+      incR2   = PRS.incR2.extract(data, outcome, predictor, covs),
+      fit     = PRS.model.fit.extract(m_full, predictor),
+      summary = PRS.extract.full_summary(m_full, predictor)
+    )
+  })
+  list(
+    incR2        = map_dfr(results, "incR2"),
+    model_fit    = map_dfr(results, "fit"),
+    full_summary = map_dfr(results, "summary")
+  )
+}
+```
+```{r PRS modeling}
+SPARK.df.all = fread(here("SPQ_post_GWAS/SPARK_PRS/formatted_tables/SPARK.df.all.txt"))
+
+# Effect of SPQ PRS on social behaviours: scq
+# Effect of SPR PRS on repetitive behaviours: rbsr
+# Effect of SPQ PRS on developmental milestones (onset age): traits ended in _age_mos
+# Effect of SPQ PRS on autism symptom domain latent factors: PA1-PA6
+# Optional: Effect of SPQ PRS on IQ-based test scores
+
+# No PRS*Sex Interaction Model
+gPCA_covs = paste0("gPCA", 1:10)  # "gPCA1" "gPCA2" ... "gPCA10"
+
+covariate_map = list(
+  scq_final_score               = c(gPCA_covs, "scq_age_at_eval_months", "sex"),
+  rbsr_total_final_score        = c(gPCA_covs, "rbsr_age_at_eval_months", "sex"),
+  i_stereotyped_behavior_score  = c(gPCA_covs, "rbsr_age_at_eval_months", "sex"),
+  ii_self_injurious_score       = c(gPCA_covs, "rbsr_age_at_eval_months", "sex"),
+  iii_compulsive_behavior_score = c(gPCA_covs, "rbsr_age_at_eval_months", "sex"),
+  iv_ritualistic_behavior_score = c(gPCA_covs, "rbsr_age_at_eval_months", "sex"),
+  v_sameness_behavior_score     = c(gPCA_covs, "rbsr_age_at_eval_months", "sex"),
+  vi_restricted_behavior_score  = c(gPCA_covs, "rbsr_age_at_eval_months", "sex"),
+  smiled_age_mos                = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  sat_wo_support_age_mos        = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  crawled_age_mos               = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  walked_age_mos                = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  fed_self_spoon_age_mos        = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  used_words_age_mos            = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  combined_words_age_mos        = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  combined_phrases_age_mos      = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  bladder_trained_age_mos       = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  bowel_trained_age_mos         = c(gPCA_covs, "dev_age_at_eval_months", "sex"),
+  PA1 = c(gPCA_covs, "scq_age_at_eval_months", "rbsr_age_at_eval_months", "sex"),
+  PA2 = c(gPCA_covs, "scq_age_at_eval_months", "rbsr_age_at_eval_months", "sex"),
+  PA3 = c(gPCA_covs, "scq_age_at_eval_months", "rbsr_age_at_eval_months", "sex"),
+  PA4 = c(gPCA_covs, "scq_age_at_eval_months", "rbsr_age_at_eval_months", "sex"),
+  PA5 = c(gPCA_covs, "scq_age_at_eval_months", "rbsr_age_at_eval_months", "sex"),
+  PA6 = c(gPCA_covs, "scq_age_at_eval_months", "rbsr_age_at_eval_months", "sex")
+)
+
+SPQ.base = PRS.run_models(SPARK.df.all, 
+                           outcomes = names(covariate_map),
+                           predictors = "SPQ_PRS", 
+                           covariates = covariate_map)
+SPQ.base$incR2 = SPQ.base$incR2 %>% mutate(p.val_FDR = p.adjust(p.val, method = "fdr"),
+                                           Sig.level = case_when(
+                                             p.val_FDR < 0.001 ~ "***", 
+                                             p.val_FDR < 0.01  ~ "**",
+                                             p.val_FDR < 0.05  ~ "*",
+                                             TRUE              ~ NA))
+
+# Sex interaction model — now works through the same batch runner
+covariate_map_sex_int = map(covariate_map, ~ c(.x, "SPQ_PRS"))
+
+SPQ.base.sex_int = PRS.run_models(SPARK.df.all,
+                                  outcomes = names(covariate_map),
+                                  predictors = "SPQ_PRS:sex",
+                                  covariates = covariate_map_sex_int)
+
+SPQ.base.sex_int$incR2 = SPQ.base.sex_int$incR2 %>% 
+  mutate(p.val_FDR = p.adjust(p.val, method = "fdr"),
+         Sig.level = case_when(
+           p.val_FDR < 0.001 ~ "***", 
+           p.val_FDR < 0.01  ~ "**",
+           p.val_FDR < 0.05  ~ "*",
+           TRUE              ~ NA)) # Found no significance.
+```
+
+# Figure 3.3.8 SPQ PRS Base Model
+```{r data formatting for PRS model figure}
+SPQ.base.f = SPQ.base$incR2 %>%
+  mutate(
+    inc.R2.pct = inc.R2 * 100,  # convert proportion to percentage
+    outcome_category = case_when(
+      grepl("^PA[1-6]$", outcome) ~ "Latent autism core features",
+      outcome %in% c("scq_final_score", "rbsr_total_final_score") |
+        grepl("^(i|ii|iii|iv|v|vi)_", outcome) ~ "Questionnaire-based developmental scoring",
+      grepl("_age_mos$", outcome) ~ "Developmental milestone age (months)",
+      TRUE ~ "Other"
+    ),
+    outcome_category = factor(outcome_category, levels = c(
+      "Questionnaire-based developmental scoring",
+      "Developmental milestone age (months)",
+      "Latent autism core features"
+    )),
+    outcome_label = case_when(
+      outcome == "PA1" ~ "insistence on sameness",
+      outcome == "PA2" ~ "social interaction",
+      outcome == "PA3" ~ "sensory-motor behavior",
+      outcome == "PA4" ~ "self-injurious behavior",
+      outcome == "PA5" ~ "idiosyncratic speech",
+      outcome == "PA6" ~ "communication skills",
+      outcome == "scq_final_score"       ~ "SCQ total score",
+      outcome == "rbsr_total_final_score" ~ "RBS-R total score",
+      outcome == "ii_self_injurious_score" ~ "self-injurious behavior",
+      grepl("^(i|ii|iii|iv|v|vi)_", outcome) ~ gsub("^(i|ii|iii|iv|v|vi)_|_score", "", outcome),
+      grepl("_age_mos$", outcome) ~ gsub("_age_mos$", "", outcome),TRUE ~ outcome),
+      outcome_label = str_to_sentence(gsub("_", " ", outcome_label)),
+      outcome_label = str_replace_all(outcome_label, regex("\\bwo\\b", ignore_case = TRUE), "without"),
+      outcome_label = str_replace_all(outcome_label, regex("\\bfed self spoon\\b", ignore_case = TRUE), "Fed self with spoon")) %>%
+  mutate(outcome_label = str_wrap(outcome_label, width = 10)) # cut to new lines when length of string reach to specific length
+```
+
+```{r Figure 3.3.8}
+F3.3.8 = ggbarplot(SPQ.base.f, x = "outcome_label", y = "inc.R2.pct", 
+                  fill = "association", 
+                  facet.by = "outcome_category", 
+                  ncol = 1,
+                  scales = "free_x") + 
+  scale_fill_manual(values = c("positive" = "tomato", "negative" = "skyblue")) +
+  labs(y = "Incremental Variance explained by SPQ PRS in %", x = "Developmental Phenotypes") + 
+  ylim(-0.003, 0.4) + 
+  geom_text(aes(label = Sig.level), col = "black", vjust = -0.05) +
+  theme(axis.text.x = element_text(size = 8),
+        legend.position = "bottom")
+```
+
+```{r save figure, eval=FALSE, include=FALSE}
+ggsave(here("SPQ_figure_tables/F3.3.8.png"), 
+       plot = F3.3.8, 
+       width = 12.5, height = 10, 
+         units = "in",
+         dpi = 300)
+
+ggsave(here("SPQ_figure_tables/F3.3.8.pdf"), 
+       plot = F3.3.8, 
+       width = 12.5, height = 10, 
+         units = "in",
+         dpi = 300)
+```
+
+
+# Sensitivity Analysis:
+```{r SPQ score between UKB (healthy:no PSYCH diagnosis) vs UKB (with autism diagnosis)}
+master.UKB.pheno = fread(here("SPQ_pre_GWAS/UKB_master_pheno_withSPQtotal.QCed.AQfiltered.formatted.txt"))
+
+# Mental health variables
+mental_health_vars = paste0("29000-0.", 0:19) # Multiple choice mental health diagnoses (newer, more comprehensive)
+
+# ASD-specific variables
+asd_vars = c(
+  "32324-0.0",  # Diagnosis of autism by a medical professional (N=313 vs 29000 N=408)
+  "32325-0.0"   # Age of autism diagnosis
+)
+
+# UKB (Healthy) vs UKB (Autism)
+UKB.comparison = master.UKB.pheno %>%
+  mutate(
+    healthy_mh = if_all(all_of(mental_health_vars), ~ .x %in% c(-8, -7, -6) | is.na(.x)),
+    ASD_status = case_when(
+      `32324-0.0` == 1              ~ "ASD",
+      healthy_mh & `32324-0.0` == 0 ~ "Non-ASD",
+      TRUE                          ~ NA_character_
+    )
+  )
+
+t.test(SPQ_total ~ ASD_status, data = UKB.comparison)
+wilcox.test(SPQ_total ~ ASD_status, data = UKB.comparison)
+```
+
+```{r SPARK on SPQ prediction to ADHD diagnosis}
+# Yes, will be good to test this: ADHD (0/1) ~ SPQ PRS + COVAR is what I was thinking. You may want to restrict to people who are at least 7 years old so that everyone has a decent probability of receiving an ADHD diagnosis.
+```
+
+
+
+TODO: PRS SCORE scale - scale it and redo + ADHD diagnosis ~ PRS
