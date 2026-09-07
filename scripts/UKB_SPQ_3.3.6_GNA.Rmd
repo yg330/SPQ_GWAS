@@ -1,0 +1,281 @@
+---
+title: "Chapter 3.3.6 GNA"
+author: "Yuanjun Gu"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r setup, include=FALSE}
+library(here)
+library(data.table)
+library(tidyverse)
+library(tidygraph)
+library(ggraph)
+library(GenomicSEM)
+library(GNA)
+
+SPQ_total_sumstat = list.files(here(), pattern = "SPQ_total.sumstats", full.names = TRUE)
+
+AQ_sumstat = list.files(here(), pattern = "AQ", full.names = TRUE)
+
+neuroticism_sumstats = list.files(here(), pattern = "neuroticism_ctg_", full.names = TRUE)
+ADHD_sumstats = list.files(here(), pattern = "ADHD_demontis_2022.sumstats", full.names = TRUE)
+
+ASD_sumstats = list.files(here(), pattern = "Autism_Grove_2019.sumstats", recursive = FALSE, full.names = TRUE)
+ASD_early_sumstats = list.files(here(), pattern = "up_early_GWAS.sumstats.gz", recursive = FALSE, full.names = TRUE)
+ASD_late_sumstats = list.files(here(), pattern = "up_late_GWAS.sumstats.gz", recursive = FALSE, full.names = TRUE)
+
+active.testosterone_sumstats = list.files(here(), pattern = "freetsexcombined", recursive = FALSE, full.names = TRUE)
+shbg_sumstats = list.files(here(), pattern = "shbgsexcombined", recursive = FALSE, full.names = TRUE)
+total.testosterone_sumstats = list.files(here(), pattern = "testosteronesexcombined.sumstats.gz", recursive = FALSE, full.names = TRUE)
+multi_pain_sumstats = list.files(here(), pattern = "multi_site_chronic_pain", full.names = TRUE)
+```
+
+```{r GNA initial set up: Only for first time, eval=FALSE, include=FALSE}
+refData("eur") # extract European reference data from GNA package
+```
+# Basic model
+```{r SPQ <-> ASD <-> ADHD}
+# multi_ldsc
+traits.name = c("ASD", "ADHD", "SPQ")
+traits.sumstats = c(ASD_sumstats, ADHD_sumstats, SPQ_total_sumstat)
+
+ld = here("eur_w_ld_chr")
+wld = here("eur_w_ld_chr")
+
+sample.prev = c(0.3966, 0.172, NA)
+population.prev = c(0.01, 0.05, NA)
+
+ldsc.proxy_ADHD = ldsc(trait.names=traits.name, traits=traits.sumstats, 
+                           sample.prev=sample.prev, population.prev=population.prev, 
+                           ld=ld, wld=wld)
+
+saveRDS(ldsc.proxy_ADHD, file=here("GNA_results/multi_ldsc_model_ASD_ADHD.RDS"))
+SPQ_ASD_ADHD.graph = traitNET(covstruc=ldsc.proxy_ADHD)
+```
+```{r SPQ <-> ASD (early) <-> ASD (late) <-> ADHD}
+# multi_ldsc
+traits.name = c("ASD_early", "ASD_late", "ADHD", "SPQ")
+traits.sumstats = c(ASD_early_sumstats, ASD_late_sumstats, ADHD_sumstats, SPQ_total_sumstat)
+
+ld = here("eur_w_ld_chr")
+wld = here("eur_w_ld_chr")
+
+sample.prev = c(0.3966, 0.3966, 0.172, NA)
+population.prev = c(0.01, 0.01, 0.05, NA)
+
+ldsc.proxy_ASD_eORl_ADHD = ldsc(trait.names=traits.name, traits=traits.sumstats, 
+                           sample.prev=sample.prev, population.prev=population.prev, 
+                           ld=ld, wld=wld)
+
+saveRDS(ldsc.proxy_ASD_eORl_ADHD, file=here("GNA_results/multi_ldsc_model_ASDeORl_ADHD.RDS"))
+SPQ_ASD_eORl_ADHD.graph = traitNET(covstruc=ldsc.proxy_ASD_eORl_ADHD)
+```
+# Baisc model: Sex Diff
+```{r SPQ <-> ASD (early) <-> ASD (late) <-> ADHD <-> Sex hormone}
+# test 1: shbg - the only one remained significant after adjustments.
+traits.name = c("ASD_early", "ASD_late", "ADHD", "SPQ", "shbg")
+traits.sumstats = c(ASD_early_sumstats, ASD_late_sumstats, ADHD_sumstats, SPQ_total_sumstat, shbg_sumstats)
+
+ld = here("eur_w_ld_chr")
+wld = here("eur_w_ld_chr")
+
+sample.prev = c(0.3966, 0.3966, 0.172, NA, NA)
+population.prev = c(0.01, 0.01, 0.05, NA, NA)
+
+ldsc.proxy_ASD_eORl_ADHD_sex = ldsc(trait.names=traits.name, traits=traits.sumstats, 
+                           sample.prev=sample.prev, population.prev=population.prev, 
+                           ld=ld, wld=wld)
+
+saveRDS(ldsc.proxy_ASD_eORl_ADHD_sex, file=here("GNA_results/multi_ldsc_model_ASDeORl_ADHD.sex_shbg.RDS"))
+SPQ_ASD_eORl_ADHD_sex.graph = traitNET(covstruc=ldsc.proxy_ASD_eORl_ADHD_sex)
+
+# test 2: free (active) testosterone
+traits.name = c("ASD_early", "ASD_late", "ADHD", "SPQ", "f_t")
+traits.sumstats = c(ASD_early_sumstats, ASD_late_sumstats, ADHD_sumstats, SPQ_total_sumstat, active.testosterone_sumstats)
+
+ld = here("eur_w_ld_chr")
+wld = here("eur_w_ld_chr")
+
+sample.prev = c(0.3966, 0.3966, 0.172, NA, NA)
+population.prev = c(0.01, 0.01, 0.05, NA, NA)
+
+ldsc.proxy_ASD_eORl_ADHD_sex = ldsc(trait.names=traits.name, traits=traits.sumstats, 
+                           sample.prev=sample.prev, population.prev=population.prev, 
+                           ld=ld, wld=wld)
+
+saveRDS(ldsc.proxy_ASD_eORl_ADHD_sex, file=here("GNA_results/multi_ldsc_model_ASDeORl_ADHD.sex_active_testosterone.RDS"))
+net.graph = traitNET(covstruc=ldsc.proxy_ASD_eORl_ADHD_sex)
+
+# test 3: total testosterone level
+traits.name = c("ASD_early", "ASD_late", "ADHD", "SPQ", "total_testosterone")
+traits.sumstats = c(ASD_early_sumstats, ASD_late_sumstats, ADHD_sumstats, SPQ_total_sumstat, total.testosterone_sumstats)
+
+ld = here("eur_w_ld_chr")
+wld = here("eur_w_ld_chr")
+
+sample.prev = c(0.3966, 0.3966, 0.172, NA, NA)
+population.prev = c(0.01, 0.01, 0.05, NA, NA)
+
+ldsc.proxy_ASD_eORl_ADHD_sex = ldsc(trait.names=traits.name, traits=traits.sumstats, 
+                           sample.prev=sample.prev, population.prev=population.prev, 
+                           ld=ld, wld=wld)
+
+saveRDS(ldsc.proxy_ASD_eORl_ADHD_sex, file=here("GNA_results/multi_ldsc_model_ASDeORl_ADHD_sex_total_testosterone.RDS"))
+net.graph = traitNET(covstruc=ldsc.proxy_ASD_eORl_ADHD_sex)
+```
+
+# Pain:
+```{r Pain Baisc Model}
+# SPQ <-> Pain <-> ASD (early) <-> ASD (late) <-> ADHD
+traits.name = c("ASD_early", "ASD_late", "ADHD", "SPQ", "multi_pain")
+traits.sumstats = c(ASD_early_sumstats, ASD_late_sumstats, ADHD_sumstats, SPQ_total_sumstat, multi_pain_sumstats)
+
+ld = here("eur_w_ld_chr")
+wld = here("eur_w_ld_chr")
+
+sample.prev = c(0.3966, 0.3966, 0.172, NA, NA) # multi-pain was not done as binary case/control but continuous scoring between 0-7
+population.prev = c(0.01, 0.01, 0.05, NA, NA)
+
+ldsc.proxy_ASD_ADHD_pain = ldsc(trait.names=traits.name, traits=traits.sumstats, 
+                           sample.prev=sample.prev, population.prev=population.prev, 
+                           ld=ld, wld=wld)
+
+saveRDS(ldsc.proxy_ASD_ADHD_pain, file=here("GNA_results/multi_ldsc_model_ASDeORl_ADHD_pain.RDS"))
+SPQ_ASD_eORl_ADHD_pain.graph = traitNET(covstruc=ldsc.proxy_ASD_ADHD_pain)
+```
+# Pain: Sex Diff
+```{r}
+# SPQ <-> Pain <-> ASD (early) <-> ASD (late) <-> ADHD <-> shbg
+traits.name = c("ASD_early", "ASD_late", "ADHD", "SPQ", "multi_pain", "shbg")
+traits.sumstats = c(ASD_early_sumstats, ASD_late_sumstats, ADHD_sumstats, SPQ_total_sumstat, multi_pain_sumstats, shbg_sumstats)
+
+ld = here("eur_w_ld_chr")
+wld = here("eur_w_ld_chr")
+
+sample.prev = c(0.3966, 0.3966, 0.172, NA, NA, NA)
+population.prev = c(0.01, 0.01, 0.05, NA, NA, NA)
+
+ldsc.proxy_ASD_ADHD_pain_sex.shbg = ldsc(trait.names=traits.name, traits=traits.sumstats, 
+                           sample.prev=sample.prev, population.prev=population.prev, 
+                           ld=ld, wld=wld)
+
+saveRDS(ldsc.proxy_ASD_ADHD_pain_sex.shbg, file=here("GNA_results/multi_ldsc_model_ASDeORl_ADHD_pain_sex.shbg.RDS"))
+SPQ_ASD_eORl_ADHD_pain_sex.graph = traitNET(covstruc=ldsc.proxy_ASD_ADHD_pain_sex.shbg)
+```
+
+# SPQ, AQ, ASD and ADHD
+```{r SPQ <-> AQ <-> ASD <-> ADHD}
+traits.name = c("ASD_early", "ASD_late", "ADHD", "SPQ", "AQ_AS", "AQ_ATD", "AQ_Com", "AQ_IM", "AQ_SS")
+traits.sumstats = c(ASD_early_sumstats, ASD_late_sumstats, ADHD_sumstats, SPQ_total_sumstat, 
+                    AQ_sumstat[1], AQ_sumstat[2], AQ_sumstat[3], AQ_sumstat[5], AQ_sumstat[6])
+
+ld = here("eur_w_ld_chr")
+wld = here("eur_w_ld_chr")
+
+sample.prev = c(0.3966, 0.3966, 0.172, NA, NA, NA, NA, NA, NA)
+population.prev = c(0.01, 0.01, 0.05, NA, NA, NA, NA, NA, NA)
+
+ldsc.proxy_ASD_ADHD_AQ = ldsc(trait.names=traits.name, traits=traits.sumstats, 
+                           sample.prev=sample.prev, population.prev=population.prev, 
+                           ld=ld, wld=wld)
+
+saveRDS(ldsc.proxy_ASD_ADHD_AQ, file=here("GNA_results/multi_ldsc_model_ASDeORl_ADHD_AQ.RDS"))
+SPQ_AQ_ASD_eORl_ADHD.graph = traitNET(covstruc=ldsc.proxy_ASD_ADHD_AQ, graph_layout = "spring")
+```
+
+# AQ, SPQ, ASD and ADHD: Sex Diff
+```{r SPQ <-> AQ <-> ASD <-> ADHD <-> shbg}
+traits.name = c("ASD_early", "ASD_late", "ADHD", "SPQ", "AQ_AS", "AQ_ATD", "AQ_Com", "AQ_IM", "AQ_SS", "shbg")
+traits.sumstats = c(ASD_early_sumstats, ASD_late_sumstats, ADHD_sumstats, SPQ_total_sumstat, 
+                    AQ_sumstat[1], AQ_sumstat[2], AQ_sumstat[3], AQ_sumstat[5], AQ_sumstat[6], 
+                    shbg_sumstats)
+
+ld = here("eur_w_ld_chr")
+wld = here("eur_w_ld_chr")
+
+sample.prev = c(0.3966, 0.3966, 0.172, NA, NA, NA, NA, NA, NA, NA)
+population.prev = c(0.01, 0.01, 0.05, NA, NA, NA, NA, NA, NA, NA)
+
+ldsc.proxy_ASD_ADHD_AQ_sex.shbg = ldsc(trait.names=traits.name, traits=traits.sumstats, 
+                           sample.prev=sample.prev, population.prev=population.prev, 
+                           ld=ld, wld=wld)
+
+saveRDS(ldsc.proxy_ASD_ADHD_AQ_sex.shbg, file=here("GNA_results/multi_ldsc_model_ASDeORl_ADHD_AQ_sex.shbg.RDS"))
+SPQ_AQ_ASD_eORl_ADHD_sex.graph = traitNET(covstruc=ldsc.proxy_ASD_ADHD_AQ_sex.shbg, graph_layout = "spring")
+```
+
+# Figure 3.3.7 Components Generation
+```{r function for beautified GNA plot generation}
+GNA.plot = function(model_result, output_path = NULL, layout = "circle", width = 3, height = 3, seed = 42) {
+  # Grab from GNA network results
+  edges = as.data.table(model_result$model_results$sparse$parameters)[
+    op == "--" & est != 0,
+    .(from = trait1, to = trait2, weight = est, p = p)]
+
+  # Trait label formatting
+  edges[, `:=`(
+    from = gsub("_", "\n", from),
+    to   = gsub("_", "\n", to))]
+
+  # Correction: shbg to SHBG
+  edges[, from := gsub("^shbg$", "SHBG", from, ignore.case = TRUE)]
+  edges[, to   := gsub("^shbg$", "SHBG", to, ignore.case = TRUE)]
+
+  nodes = tibble(name = union(edges$from, edges$to))
+  g = tbl_graph(nodes = nodes, edges = edges, directed = FALSE)
+
+  set.seed(seed)
+  
+  p_out = ggraph(g, layout = layout) +
+    geom_edge_link(aes(width  = -log10(p), colour = weight),lineend = "round") +
+    scale_edge_width(range = c(1, 6), limits = c(1.30, 65), 
+                     breaks = c(1.30, 10, 20, 30, 40, 50, 65), name = expression(-log[10](p_FDR))) +
+    scale_edge_colour_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", 
+                                midpoint = 0, limits = c(-1, 1), name = expression("Partial " * r[g])) +
+    geom_node_point(size = 14, fill = "white", colour = "black", shape = 21, stroke = 1) +
+    geom_node_text(aes(label = name), size = 3, fontface = "bold", colour = "black", lineheight = 0.8) +
+    coord_fixed(clip = "off") +
+    theme_void() +
+    theme(plot.margin = margin(40, 40, 40, 40))
+
+  if (!is.null(output_path)) {ggsave(filename = output_path, plot = p_out, width = width, height = height, dpi = 300, device = ragg::agg_png)}
+  p_out
+}
+```
+```{r Graph 3.3.7 Format, eval=FALSE, include=FALSE}
+# For base model: SPQ-ASD-ADHD
+GNA.plot(SPQ_ASD_ADHD.graph, here("GNA_graph_components/SPQ_ASD_ADHD.png"))
+GNA.plot(SPQ_ASD_eORl_ADHD.graph, here("GNA_graph_components/SPQ_ASD_eORl_ADHD.png"))
+GNA.plot(SPQ_ASD_eORl_ADHD_sex.graph, here("GNA_graph_components/SPQ_ASD_eORl_ADHD_sex.png"), layout = "stress") # For sex difference
+
+# For Pain model: SPQ-ASD-ADHD-pain
+GNA.plot(SPQ_ASD_eORl_ADHD_pain.graph, here("GNA_graph_components/SPQ_ASD_eORl_ADHD_pain.png"), layout = "stress")
+GNA.plot(SPQ_ASD_eORl_ADHD_pain_sex.graph, here("GNA_graph_components/SPQ_ASD_eORl_ADHD_pain_sex.png"), layout = "stress")
+
+# For AQ model: sex difference was not included as no significance.
+GNA.plot(SPQ_AQ_ASD_eORl_ADHD.graph, here("GNA_graph_components/SPQ_ASD_eORl_ADHD_AQ.png"), layout = "stress", width = 6, height = 6)
+```
+
+```{r Graph 3.3.7 Format corr/patchwork plot formatting for thesis/manuscript}
+Fig_3.3.7A = GNA.plot(SPQ_ASD_ADHD.graph)
+Fig_3.3.7B = GNA.plot(SPQ_ASD_eORl_ADHD.graph)
+Fig_3.3.7C = GNA.plot(SPQ_ASD_eORl_ADHD_sex.graph, layout = "stress")
+Fig_3.3.7D = GNA.plot(SPQ_ASD_eORl_ADHD_pain.graph, layout = "stress")
+Fig_3.3.7E = GNA.plot(SPQ_ASD_eORl_ADHD_pain_sex.graph, layout = "stress")
+Fig_3.3.7F = GNA.plot(SPQ_AQ_ASD_eORl_ADHD.graph, layout = "stress")
+
+top_row = Fig_3.3.7A + Fig_3.3.7B + Fig_3.3.7C
+middle_row = Fig_3.3.7D + Fig_3.3.7E
+bottom_row = Fig_3.3.7F
+
+Figure_3.3.7 = top_row /middle_row/bottom_row + 
+  plot_layout(heights = c(0.8, 0.8, 1.8), guides = "collect") &
+  theme(
+    legend.position = "bottom",
+    legend.box.margin = margin(t = 30),
+    plot.tag = element_text(face = "bold", size = 12))
+
+ggsave(filename = here("Figure_3.3.7.png"), plot = Figure_3.3.7,
+  width = 9, height = 11, units = "in", dpi = 300)
+```
+
